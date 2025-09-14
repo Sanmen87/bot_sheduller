@@ -67,6 +67,7 @@ class UserAdmin(ModelView, model=User):
     ]
     column_searchable_list = [User.first_name, User.last_name, User.username, User.email]
     column_filters = [User.role, User.is_verified]
+    can_delete = False
 
 
 class TeacherAdmin(ModelView, model=Teacher):

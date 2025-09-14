@@ -49,3 +49,27 @@ Table 'teachers' is already defined → решено удалением дубл
 Верификация клиентов и роли.
 
 Интеграция в админку: фильтры по статусам слотов.
+
+API
+
+✅ JWT-логин//auth/me//auth/logout (cookie httpOnly).
+
+✅ GET /bookings с фильтрами + X-Total-Count + RBAC(admin).
+
+✅ PATCH /bookings/{id} (смена статуса), DELETE /bookings/{id}.
+
+✅ GET /bookings/export.csv (UTF-8 + BOM, ;).
+
+✅ GET /reports/teacher-load (уровень учителя за период).
+
+✅ GET /users (+поиск), POST /users, PATCH /users/{id}, DELETE /users/{id}.
+
+✅ GET /teachers, POST /teachers, DELETE /teachers/{id}.
+
+✅ Единообразная пагинация заголовком X-Total-Count.
+
+✅ CORS с expose_headers=["X-Total-Count"].
+
+✅ RBAC-хелпер require_role(...) и применение на админских ручках.
+
+✅ Фиксы стабильности удаления (безопасная последовательность, учёт FK/каскадов).

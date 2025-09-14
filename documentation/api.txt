@@ -1,0 +1,255 @@
+Аутентификация
+
+JWT (HS256) + httpOnly-cookie access_token.
+
+Для браузера: credentials: include.
+
+Роли (role) в токене: admin | teacher | client | guest.
+
+Мини-RBAC: require_role(...) на «админских» ручках.
+
+Эндпоинты
+Auth
+
+POST /auth/login — логин (form-urlencoded).
+
+Тело: username (email), password.
+
+Ответ 200:
+
+{"access_token":"<jwt>","role":"admin","user_id":0}
+
+
+Set-Cookie: access_token=...; HttpOnly; Path=/; Max-Age=3600; SameSite=lax
+
+GET /auth/me — текущий пользователь.
+
+Ответ 200:
+
+{"user_id":0,"email":"revangod@mail.ru","role":"admin","expires_at":1757885263}
+
+
+POST /auth/logout — логаут, чистит cookie.
+
+Ответ: {"ok":true}
+
+Users (только admin)
+
+GET /users — список/поиск пользователей.
+
+Параметры:
+role (admin|teacher|client|guest), q (поиск по имени/username/телефону/email), limit (1–200, default 50), offset (>=0)
+
+Заголовок пагинации: X-Total-Count.
+
+Ответ: UserOut[]
+
+[{"id":3,"telegram_id":555001,"role":"teacher","first_name":"Иван","last_name":null,"username":null,"phone":"+7999...","email":null}]
+
+
+POST /users — создать пользователя.
+
+Тело UserCreateIn:
+
+{
+  "telegram_id": 555001,
+  "role": "client",
+  "first_name": "Иван",
+  "last_name": null,
+  "username": null,
+  "phone": "+7999...",
+  "email": "test@mail.ru"
+}
+
+
+Ответ 201: UserOut
+
+Ошибки: 409 — уже существует telegram_id.
+
+Примечание: если role=teacher, создаётся пустая карточка Teacher.
+
+PATCH /users/{user_id} — частичное обновление (контакты/роль).
+
+Тело UserPatchIn: любое подмножество полей role/first_name/last_name/username/phone/email.
+
+При смене role на teacher — создаётся Teacher, если его ещё нет.
+
+Ответ: UserOut
+
+DELETE /users/{user_id} — безопасное удаление.
+
+Параметр force=false|true: если юзер — учитель, без force вернёт 409; с force=true сначала удалит учителя (см. ниже).
+
+Если есть активные брони клиента — 409.
+
+Удаляет отменённые брони и сам объект User.
+
+Ответ 200: {"ok":true,"deleted":{"user_id":123}} или 204 (если настроите так).
+
+Teachers (только admin)
+
+GET /teachers — список карточек учителей с данными пользователя и предметами.
+
+Параметры: q (поиск), subject_id, limit, offset
+
+Заголовок: X-Total-Count
+
+Ответ TeacherCardOut[]:
+
+[{
+  "id":3,
+  "user":{"id":3,"telegram_id":555001,"role":"teacher","first_name":"Иван","phone":"+7999..."},
+  "default_mode":"online",
+  "bio":null,
+  "subject_ids":[1,3]
+}]
+
+
+POST /teachers — создать карточку учителя для существующего user_id.
+
+Тело:
+
+{"user_id":3,"default_mode":"online","bio":null,"subject_ids":[1,3]}
+
+
+Ответ 201: TeacherCardOut
+
+Ошибки: 409 — учитель уже есть; 404 — user_id не найден.
+
+DELETE /teachers/{teacher_id} — безопасное удаление учителя.
+
+Удаляет все TimeSlot этого учителя (бронь по slot_id с ON DELETE CASCADE тоже уходит), связи teacher_subjects — каскад.
+
+Ответ: {"ok":true,"deleted":{"teacher_id":...}}
+
+(Привязка предметов PUT /teachers/{id}/subjects — уже была в проекте; оставили как есть.)
+
+TimeSlots
+
+(были в проекте; используем для календаря)
+
+GET /teachers/{id}/slots — лента слотов учителя.
+
+POST /teachers/{id}/slots — «нарезка» интервалов.
+
+PATCH /slots/{id}, DELETE /slots/{id} — редактирование/удаление.
+
+Роуты закрыты под admin (и/или teacher, если добавим).
+
+Bookings
+
+GET /bookings (только admin) — список броней с фильтрами + пагинация.
+
+Параметры: teacher_id, client_id, status (pending|confirmed|canceled), date_from, date_to, subject_id, limit, offset
+
+Заголовок: X-Total-Count
+
+Ответ BookingRow[]:
+
+[{
+  "id":2,"status":"confirmed","slot_id":1,"client_id":2,
+  "date":"2025-09-15","start_time":"10:00:00","end_time":"10:45:00",
+  "teacher_id":1,"subject_id":1
+}]
+
+
+PATCH /bookings/{id} (admin) — смена статуса.
+
+Тело:
+
+{"status":"canceled"}
+
+
+Ответ: полноценный Booking (как в моделях проекта).
+
+DELETE /bookings/{id} (admin) — удалить бронь, 204.
+
+GET /bookings/export.csv (admin) — экспорт CSV (те же фильтры).
+
+Кодировка: UTF-8 + BOM; разделитель ;.
+
+Reports (только admin)
+
+GET /reports/teacher-load
+
+Параметры: teacher_id, date_from, date_to
+
+Считает количество подтверждённых занятий и сумму минут по слотам в заданном диапазоне.
+
+Ответ:
+
+{"teacher_id":1,"lessons_count":1,"minutes_total":45,"hours_total":0.75}
+
+Пагинация
+
+Для списков GET /users, GET /teachers, GET /bookings выставляется заголовок X-Total-Count — используйте в web-ui для расчёта страниц.
+
+Для браузера X-Total-Count открыт через CORS: expose_headers=["X-Total-Count"].
+
+Ошибки (типовые)
+
+401 Not authenticated — нет/просрочен cookie access_token.
+
+403 Forbidden — роль не подходит (RBAC).
+
+404 Not found — объект не найден.
+
+409 Conflict — нарушение уникальности (telegram_id), попытка удалить user с учительской карточкой без force, наличие активных броней у клиента и т.п.
+
+422 Unprocessable Entity — валидация.
+
+Модели (срез)
+
+(по сути соответствуют существующим в src/db/models.py; здесь — минимум, которое возвращаем наружу)
+
+UserOut: id, telegram_id, role, first_name?, last_name?, username?, phone?, email?
+
+TeacherCardOut: id, user:UserOut, default_mode?, bio?, subject_ids:int[]
+
+BookingRow (список): id, status, slot_id, client_id, date, start_time, end_time, teacher_id, subject_id
+
+Примеры запросов
+PowerShell
+# вход
+Invoke-WebRequest -Uri "http://localhost:8000/auth/login" -Method POST `
+  -ContentType "application/x-www-form-urlencoded" `
+  -Body "username=$env:ADMIN_EMAIL&password=$env:ADMIN_PASSWORD" `
+  -SessionVariable sess
+
+# профайл
+Invoke-WebRequest -Uri "http://localhost:8000/auth/me" -WebSession $sess | % Content
+
+# брони (c заголовком total)
+$r = Invoke-WebRequest -Uri "http://localhost:8000/bookings?teacher_id=1&date_from=2025-09-01&date_to=2025-09-30" -WebSession $sess
+$r.Headers['X-Total-Count']; $r.Content
+
+# экспорт CSV
+Invoke-WebRequest -Uri "http://localhost:8000/bookings/export.csv?teacher_id=1" -OutFile bookings.csv -WebSession $sess
+
+# создать пользователя
+$body = @{ telegram_id=555010; role="client"; first_name="Иван"; phone="+79990000010"} | ConvertTo-Json
+$bytes = [Text.Encoding]::UTF8.GetBytes($body)
+Invoke-WebRequest -Uri "http://localhost:8000/users" -Method POST -ContentType "application/json; charset=utf-8" -Body $bytes -WebSession $sess
+
+# сделать его учителем
+Invoke-WebRequest -Uri "http://localhost:8000/teachers" -Method POST `
+  -ContentType "application/json" -Body (@{ user_id=3; default_mode="online"; subject_ids=@(1,3)} | ConvertTo-Json) `
+  -WebSession $sess
+
+# безопасно удалить учителя, затем пользователя
+Invoke-WebRequest -Uri "http://localhost:8000/teachers/3" -Method DELETE -WebSession $sess
+Invoke-WebRequest -Uri "http://localhost:8000/users/3" -Method DELETE -WebSession $sess
+# или одной командой (если нет активных броней)
+Invoke-WebRequest -Uri "http://localhost:8000/users/3?force=true" -Method DELETE -WebSession $sess
+
+curl
+# вход
+curl -i -X POST http://localhost:8000/auth/login \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "username=admin@example.com&password=admin123" -c cookies.txt
+
+# брони с total
+curl -i "http://localhost:8000/bookings?limit=20&offset=0" -b cookies.txt
+
+# экспорт
+curl -L "http://localhost:8000/bookings/export.csv?teacher_id=1" -b cookies.txt -o bookings.csv
