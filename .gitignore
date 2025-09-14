@@ -1,0 +1,51 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*$py.class
+
+# Virtual environment
+.venv/
+.env
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+*.pid
+
+# Testing / coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Build / packaging
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Alembic
+src/db/migrations/versions/*.py
+
+# Docker
+db_data/
+redis_data/
+*.pid
+*.sock
+
+# Reports / exports
+reports/
+*.pdf
+*.csv
+
+# System
+.DS_Store
+Thumbs.db
