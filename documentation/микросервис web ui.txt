@@ -1,0 +1,137 @@
+Архитектура
+
+web-admin (frontend): Next.js/React + FullCalendar для календаря, shadcn/ui для форм и таблиц.
+
+bff (опционально): небольшой FastAPI-“прокси” (backend-for-frontend) для агрегации/кэшей/отчётов. Можно начать без него — фронт бьёт прямо в наш API.
+
+api (у тебя уже есть): нынешний FastAPI со слотами/бронированиями.
+
+auth: JWT (роли admin, teacher). Логин → токен → хранится в httpOnly cookie.
+
+Что будет в интерфейсе (MVP)
+
+Календарь слотов преподавателя
+
+Просмотр по дням/неделям/месяцу.
+
+Создание «диапазона» → автонарезка слотов (вызов твоего /teachers/{id}/slots).
+
+Цвета статусов: available / booked / canceled / hidden / tentative.
+
+Список бронирований
+
+Фильтры по статусам, предметам, датам.
+
+Экспорт CSV (и позже XLSX).
+
+Справочники
+
+Предметы, пользователи/преподаватели (минимум для выбора в формах).
+
+Аутентификация
+
+Страница логина, разграничение разделов по ролям.
+
+Отчёты (фаза 2)
+
+«Загруженность по учителю/предмету/неделе»
+
+«Доход/кол-во бронирований» (когда появится биллинг).
+
+Нужные API-эндпоинты (минимум/дополнить существующие)
+
+(у тебя большая часть уже есть — отмечу новые/желательно)
+
+POST /auth/login → {email,password} → {access_token, role, user_id}
+
+GET /me → профиль + роль (для фронта)
+
+GET /subjects (уже есть)
+
+GET /teachers/{id}/slots?date_from&date_to (есть)
+
+POST /teachers/{id}/slots (есть)
+
+PATCH /slots/{id} (есть)
+
+DELETE /slots/{id} (есть)
+
+GET /bookings?teacher_id&date_from&date_to&status (новый фильтр) — для отчётов/таблиц
+
+GET /reports/teacher-load?teacher_id&from&to (новый)
+
+GET /reports/subject-load?subject_id&from&to (новый)
+
+(позже) GET /calendar/ical?teacher_id — iCal экспорт.
+
+Docker Compose (добавить сервис web-admin)
+services:
+  web-admin:
+    build: ./web-admin
+    ports:
+      - "3000:3000"
+    environment:
+      - API_BASE_URL=http://api:8000
+    depends_on:
+      - api
+
+Фронтенд (Next.js) — ключевые экраны
+
+/login — форма входа → сохраняем JWT в httpOnly cookie.
+
+/calendar (роль teacher/admin):
+
+FullCalendar (events = слоты)
+
+«Создать интервалы» (дата/время/шаг/предмет/ёмкость/статус) → POST на /teachers/{id}/slots.
+
+Клик по событию → боковая панель (изменить статус/ёмкость, удалить).
+
+/bookings — таблица, фильтры, экспорт CSV.
+
+/subjects — список/поиск (минимум).
+
+Пример: как кормить FullCalendar слотами
+// frontend: преобразуем /teachers/{id}/slots → события календаря
+const events = slots.map(s => ({
+  id: String(s.id),
+  title: `${s.mode ?? ''} ${s.free_spots}/${s.capacity}`,
+  start: `${s.date}T${s.start_time}`,
+  end:   `${s.date}T${s.end_time}`,
+  color: s.status === 'available' ? '#22c55e'
+       : s.status === 'booked'    ? '#3b82f6'
+       : s.status === 'canceled'  ? '#ef4444'
+       : s.status === 'hidden'    ? '#6b7280'
+       : '#a78bfa', // tentative
+}));
+
+Пример: «нарезка слотов» с фронта
+await fetch(`${API}/teachers/${teacherId}/slots`, {
+  method: 'POST',
+  credentials: 'include',
+  headers: {'Content-Type':'application/json'},
+  body: JSON.stringify({
+    date, subject_id, start_time, end_time,
+    step_min, capacity, mode, status: "available", skip_conflicts: true
+  })
+});
+
+Авторизация
+
+При логине: POST /auth/login → установи httpOnly cookie (или храни токен в memory + refresh).
+
+Middleware на фронте защищает роуты; сервер проверяет JWT (роль).
+
+На API: декоратор/Depends, который достаёт роль из токена.
+
+Быстрый план внедрения
+
+Добавить /auth/login, /me в API (JWT).
+
+Создать Next.js проект web-admin с FullCalendar и страницами /login, /calendar, /bookings.
+
+Подключить к действующим эндпоинтам; проверить CRUD слотов из UI.
+
+Добавить фильтры/экспорт CSV на /bookings.
+
+(Фаза 2) Реализовать простые отчётные эндпоинты и графики на фронте.
