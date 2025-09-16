@@ -22,7 +22,7 @@ from jose import jwt, JWTError
 from src.db.session import get_session
 from src.db.models import (
     Subject, TeacherSubject, TimeSlot, Booking,
-    SlotStatus, User, BookingStatus, Teacher, UserRole
+    SlotStatus, User, BookingStatus, Teacher, UserRole, LessonType
 )
 
 # =========================
@@ -243,6 +243,7 @@ class SlotOut(BaseModel):
     start_time: str
     end_time: str
     mode: str | None = None
+    lesson_type: str
     capacity: int
     status: SlotStatus
     free_spots: int = Field(..., description="capacity - активные брони")
@@ -257,6 +258,7 @@ class CreateTeacherSlotsIn(BaseModel):
     step_min: int | None = None
     capacity: int = 1
     mode: str | None = "online"
+    lesson_type: str = "individual"
     status: SlotStatus = SlotStatus.available
     skip_conflicts: bool = True  # если False — вернём 409 при первом конфликте
 
@@ -277,6 +279,8 @@ async def list_slots(
     subject_id: int | None = Query(default=None),
     date: dt_date | None = Query(default=None),
     free_only: bool = Query(default=True),
+    mode: str | None = Query(default=None),
+    lesson_type: str | None = Query(default=None),
     session: AsyncSession = Depends(get_session),
 ):
     # Подсчёт активных броней по слоту
@@ -300,6 +304,14 @@ async def list_slots(
         stmt = stmt.where(TimeSlot.subject_id == subject_id)
     if date:
         stmt = stmt.where(TimeSlot.date == date)
+    if mode:
+        stmt = stmt.where(TimeSlot.mode == mode)
+    if lesson_type:
+        try:
+            lt_enum = LessonType(lesson_type)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="lesson_type must be 'individual' or 'group'")
+        stmt = stmt.where(TimeSlot.lesson_type == lt_enum)
 
     rows = (await session.execute(stmt)).all()
 
@@ -315,6 +327,7 @@ async def list_slots(
                     start_time=str(slot.start_time),
                     end_time=str(slot.end_time),
                     mode=slot.mode,
+                    lesson_type=slot.lesson_type.value if hasattr(slot.lesson_type, "value") else str(slot.lesson_type),
                     capacity=slot.capacity,
                     status=slot.status,
                     free_spots=free_spots or 0,
@@ -335,6 +348,16 @@ async def create_teacher_slots(
     if step_min <= 0:
         raise HTTPException(status_code=400, detail="step_min must be positive")
     step = timedelta(minutes=step_min)
+
+    # lesson_type -> Enum + валидация capacity
+    try:
+        lt_enum = LessonType(payload.lesson_type)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="lesson_type must be 'individual' or 'group'")
+    if lt_enum == LessonType.individual and payload.capacity != 1:
+        raise HTTPException(status_code=400, detail="For individual lessons capacity must be 1")
+    if lt_enum == LessonType.group and payload.capacity < 2:
+        raise HTTPException(status_code=400, detail="For group lessons capacity must be >= 2")
 
     # 2) Готовим нарезку
     times: list[tuple[dt_time, dt_time]] = []
@@ -381,6 +404,7 @@ async def create_teacher_slots(
                 start_time=s_time,
                 end_time=e_time,
                 mode=payload.mode,
+                lesson_type=lt_enum,      # важное добавление
                 capacity=payload.capacity,
                 status=payload.status,
             )
@@ -405,34 +429,60 @@ async def teacher_slots(
     date: dt_date | None = None,
     date_from: dt_date | None = None,
     date_to: dt_date | None = None,
+    mode: str | None = Query(default=None),
+    lesson_type: str | None = Query(default=None),
     session: AsyncSession = Depends(get_session),
 ):
+    # валидация lesson_type из query (если передан)
+    lt_enum: LessonType | None = None
+    if lesson_type is not None:
+        try:
+            lt_enum = LessonType(lesson_type)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="lesson_type must be 'individual' or 'group'")
+
     b_sub = (
         select(Booking.slot_id, func.count().label("bcount"))
         .where(Booking.status != BookingStatus.canceled)
         .group_by(Booking.slot_id)
         .subquery()
     )
+
     stmt = (
-        select(TimeSlot,
-               (TimeSlot.capacity - func.coalesce(b_sub.c.bcount, 0)).label("free_spots"))
+        select(
+            TimeSlot,
+            (TimeSlot.capacity - func.coalesce(b_sub.c.bcount, 0)).label("free_spots"),
+        )
         .join(b_sub, b_sub.c.slot_id == TimeSlot.id, isouter=True)
         .where(TimeSlot.teacher_id == teacher_id)
         .order_by(TimeSlot.date, TimeSlot.start_time)
     )
+
     if date:
         stmt = stmt.where(TimeSlot.date == date)
     if date_from:
         stmt = stmt.where(TimeSlot.date >= date_from)
     if date_to:
         stmt = stmt.where(TimeSlot.date <= date_to)
+    if mode:
+        stmt = stmt.where(TimeSlot.mode == mode)
+    if lt_enum is not None:
+        stmt = stmt.where(TimeSlot.lesson_type == lt_enum)
 
     rows = (await session.execute(stmt)).all()
     return [
         SlotOut(
-            id=s.id, teacher_id=s.teacher_id, subject_id=s.subject_id,
-            date=s.date, start_time=str(s.start_time), end_time=str(s.end_time),
-            mode=s.mode, capacity=s.capacity, status=s.status, free_spots=fs or 0
+            id=s.id,
+            teacher_id=s.teacher_id,
+            subject_id=s.subject_id,
+            date=s.date,
+            start_time=str(s.start_time),
+            end_time=str(s.end_time),
+            mode=s.mode,
+            lesson_type=(s.lesson_type.value if hasattr(s.lesson_type, "value") else str(s.lesson_type)),
+            capacity=s.capacity,
+            status=s.status,
+            free_spots=fs or 0,
         )
         for s, fs in rows
     ]
@@ -440,6 +490,7 @@ async def teacher_slots(
 class PatchSlotIn(BaseModel):
     status: SlotStatus | None = None
     capacity: int | None = None
+    lesson_type: str | None = None
 
 @app.patch("/slots/{slot_id}", response_model=SlotOut, tags=["slots"])
 async def patch_slot(
@@ -451,16 +502,31 @@ async def patch_slot(
     if not slot:
         raise HTTPException(status_code=404, detail="Slot not found")
 
+    # текущее число занятых мест
+    used = (await session.execute(
+        select(func.count()).select_from(Booking)
+        .where(Booking.slot_id == slot_id)
+        .where(Booking.status != BookingStatus.canceled)
+    )).scalar_one()
+
+    # смена типа занятия (если передан)
+    if payload.lesson_type is not None:
+        try:
+            slot.lesson_type = LessonType(payload.lesson_type)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="lesson_type must be 'individual' or 'group'")
+
+    # смена capacity (если передан)
     if payload.capacity is not None:
-        # нельзя уменьшить capacity ниже уже занятых мест
-        used = (await session.execute(
-            select(func.count()).select_from(Booking)
-            .where(Booking.slot_id == slot_id)
-            .where(Booking.status != BookingStatus.canceled)
-        )).scalar_one()
         if payload.capacity < used:
             raise HTTPException(status_code=400, detail=f"capacity < used ({used})")
         slot.capacity = payload.capacity
+
+    # согласованность type ↔ capacity
+    if slot.lesson_type == LessonType.individual and slot.capacity != 1:
+        raise HTTPException(status_code=400, detail="For individual lessons capacity must be 1")
+    if slot.lesson_type == LessonType.group and slot.capacity < 2:
+        raise HTTPException(status_code=400, detail="For group lessons capacity must be >= 2")
 
     if payload.status is not None:
         slot.status = payload.status
@@ -474,9 +540,17 @@ async def patch_slot(
     )).scalar_one()
     free_spots = (slot.capacity - used)
     return SlotOut(
-        id=slot.id, teacher_id=slot.teacher_id, subject_id=slot.subject_id,
-        date=slot.date, start_time=str(slot.start_time), end_time=str(slot.end_time),
-        mode=slot.mode, capacity=slot.capacity, status=slot.status, free_spots=free_spots
+        id=slot.id,
+        teacher_id=slot.teacher_id,
+        subject_id=slot.subject_id,
+        date=slot.date,
+        start_time=str(slot.start_time),
+        end_time=str(slot.end_time),
+        mode=slot.mode,
+        lesson_type=(slot.lesson_type.value if hasattr(slot.lesson_type, "value") else str(slot.lesson_type)),
+        capacity=slot.capacity,
+        status=slot.status,
+        free_spots=free_spots,
     )
 
 @app.delete("/slots/{slot_id}", status_code=204, tags=["slots"])
@@ -845,7 +919,7 @@ async def create_teacher(
     subj_ids = payload.subject_ids or []
     return TeacherCardOut(
         id=payload.user_id,
-        user=user,
+        user=UserOut.model_validate(user),
         default_mode=payload.default_mode,
         bio=payload.bio,
         subject_ids=subj_ids,

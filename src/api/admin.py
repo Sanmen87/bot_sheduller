@@ -91,9 +91,10 @@ class TimeSlotAdmin(ModelView, model=TimeSlot):
         TimeSlot.capacity,
         TimeSlot.status,
         TimeSlot.mode,
+        TimeSlot.lesson_type,
     ]
     column_labels = {"teacher": "Teacher", "subject": "Subject"}
-    column_filters = [TimeSlot.date, TimeSlot.status, TimeSlot.mode]
+    column_filters = [TimeSlot.date, TimeSlot.status, TimeSlot.mode, TimeSlot.lesson_type]
     column_sortable_list = [TimeSlot.date, TimeSlot.start_time, TimeSlot.id]
     column_default_sort = [(TimeSlot.date, True), (TimeSlot.start_time, True)]
 
@@ -109,6 +110,12 @@ class TimeSlotAdmin(ModelView, model=TimeSlot):
                 "booked": "warning",
                 "tentative": "info",
             }.get(getattr(m.status, "value", str(m.status)), "secondary"),
+        ),
+        TimeSlot.lesson_type: lambda m, a: _badge(
+            getattr(m.lesson_type, "value", str(m.lesson_type)),
+            {"individual": "primary", "group": "dark"}.get(
+                getattr(m.lesson_type, "value", str(m.lesson_type)), "secondary"
+            ),
         ),
         TimeSlot.mode: lambda m, a: _badge(str(m.mode or "-"), "info"),
     }

@@ -44,6 +44,10 @@ class BookingStatus(str, enum.Enum):
     confirmed = "confirmed"
     canceled = "canceled"
 
+class LessonType(str, enum.Enum):
+    individual = "individual"
+    group = "group"
+
 
 # ===== Tables =====
 class User(Base):
@@ -148,17 +152,18 @@ class TimeSlot(Base):
     start_time: Mapped[dt_time] = mapped_column(Time, nullable=False)
     end_time: Mapped[dt_time] = mapped_column(Time, nullable=False)
 
-    mode: Mapped[str | None] = mapped_column(String(16))
+    mode: Mapped[str | None] = mapped_column(String(16))  # 'online' | 'offline'
+    lesson_type: Mapped[LessonType] = mapped_column(
+        Enum(LessonType), default=LessonType.individual, nullable=False
+    )
     capacity: Mapped[int] = mapped_column(Integer, default=1)
     status: Mapped[SlotStatus] = mapped_column(
         Enum(SlotStatus), default=SlotStatus.available, nullable=False
     )
 
-    # критично для sqladmin: это именно relations, а не *_id
-    teacher: Mapped[Teacher] = relationship(back_populates="time_slots")
-    subject: Mapped[Subject] = relationship(back_populates="time_slots")
-
-    # удобная связь на бронирования
+    # relations
+    teacher: Mapped["Teacher"] = relationship(back_populates="time_slots")
+    subject: Mapped["Subject"] = relationship(back_populates="time_slots")
     bookings: Mapped[list["Booking"]] = relationship(
         back_populates="slot", cascade="all, delete-orphan"
     )
@@ -166,7 +171,8 @@ class TimeSlot(Base):
     def __repr__(self) -> str:
         return (
             f"<TimeSlot id={self.id} t={self.teacher_id} s={self.subject_id} "
-            f"{self.date} {self.start_time}-{self.end_time} status={self.status}>"
+            f"{self.date} {self.start_time}-{self.end_time} "
+            f"type={self.lesson_type} status={self.status}>"
         )
 
 
