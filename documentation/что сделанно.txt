@@ -73,3 +73,62 @@ API
 ✅ RBAC-хелпер require_role(...) и применение на админских ручках.
 
 ✅ Фиксы стабильности удаления (безопасная последовательность, учёт FK/каскадов).
+
+Что  сегодня сделали
+
+Модель данных
+
+В TimeSlot добавили поля lesson_type (индивидуальное/групповое) и mode (online/offline).
+
+Добавили check-constraint: individual → capacity=1, group → capacity>=2.
+
+Alembic миграции
+
+Создали ревизию add_lesson_type, прогнали upgrade head, устранили конфликт с двумя head-ами.
+
+База теперь понимает новые типы занятий и вместимость.
+
+API
+
+/teachers/{id}/slots и /slots теперь умеют фильтровать по mode и lesson_type.
+
+В схемах (SlotOut, CreateTeacherSlotsIn, PatchSlotIn) появились поля lesson_type.
+
+PATCH/POST для слотов учитывают эти новые параметры.
+
+main.py
+
+Обновлён полностью: эндпоинты для логина, слотов, бронирований, отчётов уже поддерживают lesson_type/mode.
+
+Добавлен возврат free_spots (capacity – брони).
+
+Всё готово для подключения фронта.
+Готовность для web-морды
+
+Сейчас API покрывает всё базовое:
+
+CRUD для слотов (с mode/lesson_type).
+
+CRUD для бронирований + экспорт CSV.
+
+CRUD для пользователей/учителей.
+
+Авторизация JWT (cookie-friendly, для фронта).
+
+Начало для отчётов (/reports/teacher-load).
+
+То есть по списку из ТЗ и плана web-ui (микросервис web ui.txt) у нас:
+✔ auth/login, auth/me
+✔ subjects
+✔ teachers/{id}/slots (GET/POST)
+✔ slots (GET/PATCH/DELETE)
+✔ bookings (GET/POST/PATCH/DELETE, export.csv)
+✔ отчёт teacher-load
+
+Осталось мелочи:
+
+добавить отчёт subject-load,
+
+iCal экспорт (если нужен),
+
+фронт (Next.js + FullCalendar) подключить к API.
