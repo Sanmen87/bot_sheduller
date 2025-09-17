@@ -1,15 +1,30 @@
-import Link from 'next/link'
+'use client'
+import { useEffect } from 'react'
+import { useRouter } from 'next/navigation'
+import { useAuth } from '@/lib/auth'
+import { api } from '@/lib/api'
+
 export default function Home() {
-  return (
-    <main className="space-y-6">
-      <h1 className="text-2xl font-semibold">CRM расписание — web UI</h1>
-      <nav className="grid gap-2">
-        <Link className="underline" href="/login">Вход</Link>
-        <Link className="underline" href="/bookings">Бронирования</Link>
-        <Link className="underline" href="/slots">Слоты</Link>
-        <Link className="underline" href="/teachers">Учителя</Link>
-        <Link className="underline" href="/reports/teacher-load">Отчёты: нагрузка</Link>
-      </nav>
-    </main>
-  )
+  const router = useRouter()
+  const authed = useAuth(s => s.authed)
+
+  useEffect(() => {
+    // быстрый локальный роутинг по текущему флагу
+    if (authed) {
+      router.replace('/bookings')
+      return
+    }
+    // подстраховка: уточним статус у бэка
+    api.get('/auth/me')
+      .then(() => {
+        useAuth.getState().setAuthed(true)
+        router.replace('/bookings')
+      })
+      .catch(() => {
+        useAuth.getState().setAuthed(false)
+        router.replace('/login')
+      })
+  }, [authed, router])
+
+  return null
 }
