@@ -63,5 +63,19 @@ services:
     volumes:
       - ./:/app
 
+  web-dev:
+    image: node:20-alpine
+    working_dir: /app
+    command: sh -lc "npm config set fund false && npm config set audit false && if [ -f package-lock.json ]; then npm ci; else npm install; fi && npx --yes next dev -p 5173"
+    volumes:
+      - ./src/web:/app
+      - /app/node_modules           # ← node_modules храним внутри контейнера
+    environment:
+      - NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}
+    ports:
+      - "5173:5173"
+
+
+
 volumes:
   db_data:

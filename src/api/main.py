@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import os
 import io, csv
+import re
+import unicodedata
 from datetime import date as dt_date, time as dt_time, timedelta, datetime as dt_datetime, timezone
 from typing import Optional
 
@@ -16,7 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, insert, exists, delete, func, update, or_
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict, constr, conint 
 from jose import jwt, JWTError
 
 from src.db.session import get_session
@@ -116,6 +118,38 @@ class TeacherCardOut(BaseModel):
     bio: str | None = None
     subject_ids: list[int] = []
 
+# --- Subjects: Schemas ---
+class SubjectOut(BaseModel):
+    id: int
+    name: str
+    short_name: str | None = None
+    slug: str | None = None
+    category: str | None = None
+    level: str | None = None
+    color: str | None = None
+    default_duration_min: int | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+class SubjectCreateIn(BaseModel):
+    name: constr(strip_whitespace=True, min_length=1, max_length=200)
+    short_name: constr(strip_whitespace=True, max_length=50) | None = None
+    slug: constr(strip_whitespace=True, max_length=200) | None = None
+    category: constr(strip_whitespace=True, max_length=100) | None = None
+    level: constr(strip_whitespace=True, max_length=100) | None = None
+    color: constr(strip_whitespace=True, pattern=r"^#?[0-9a-fA-F]{6}$") | None = None
+    default_duration_min: conint(ge=1, le=24*60) | None = None
+
+class SubjectPatchIn(BaseModel):
+    name: constr(strip_whitespace=True, min_length=1, max_length=200) | None = None
+    short_name: constr(strip_whitespace=True, max_length=50) | None = None
+    slug: constr(strip_whitespace=True, max_length=200) | None = None
+    category: constr(strip_whitespace=True, max_length=100) | None = None
+    level: constr(strip_whitespace=True, max_length=100) | None = None
+    color: constr(strip_whitespace=True, pattern=r"^#?[0-9a-fA-F]{6}$") | None = None
+    default_duration_min: conint(ge=1, le=24*60) | None = None
+
+
 def _create_access_token(data: dict, minutes: int | None = None) -> str:
     exp_minutes = minutes if minutes is not None else ACCESS_TOKEN_EXPIRE_MINUTES
     expire = dt_datetime.now(timezone.utc) + timedelta(minutes=exp_minutes)
@@ -176,6 +210,12 @@ def current_user(request: Request) -> MeOut:
         role=data.get("role", "guest"),
         expires_at=exp,
     )
+
+def _slugify(s: str) -> str:
+    s = unicodedata.normalize("NFKD", s)
+    s = s.encode("ascii", "ignore").decode("ascii")
+    s = re.sub(r"[^a-zA-Z0-9]+", "-", s).strip("-").lower()
+    return s or "subject"
 
 @app.post("/auth/login", response_model=TokenOut, tags=["auth"])
 def auth_login(
@@ -1115,6 +1155,155 @@ async def export_bookings_csv(
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="bookings.csv"'}
     )
+
+# ---------- SUBJECTS CRUD (admin only) ----------
+
+@app.get("/subjects", response_model=list[SubjectOut], tags=["subjects"])
+async def list_subjects(
+    response: Response,                                 # важно: первым, без дефолта
+    q: str | None = Query(None, description="поиск по name/short_name/slug/category/level"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    session: AsyncSession = Depends(get_session),
+    _=Depends(require_role("admin")),
+):
+    base = select(Subject)
+    if q:
+        like = f"%{q}%"
+        base = base.where(or_(
+            Subject.name.ilike(like),
+            Subject.short_name.ilike(like),
+            Subject.slug.ilike(like),
+            Subject.category.ilike(like),
+            Subject.level.ilike(like),
+        ))
+
+    total = (await session.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
+    response.headers["X-Total-Count"] = str(total)
+
+    rows = (await session.execute(base.order_by(Subject.id).limit(limit).offset(offset))).scalars().all()
+    return rows
+
+
+@app.post("/subjects", response_model=SubjectOut, status_code=201, tags=["subjects"])
+async def create_subject(
+    payload: SubjectCreateIn,
+    session: AsyncSession = Depends(get_session),
+    _=Depends(require_role("admin")),
+):
+    # slug
+    slug = payload.slug or _slugify(payload.name)
+    # нормализуем цвет: добавим '#' если не передали
+    color = payload.color
+    if color and not color.startswith("#"):
+        color = "#" + color
+
+    # уникальность name/slug (быстрая проверка)
+    exists = (await session.execute(
+        select(Subject.id).where(or_(Subject.name == payload.name, Subject.slug == slug))
+    )).first()
+    if exists:
+        raise HTTPException(status_code=409, detail="Subject with same name/slug already exists")
+
+    obj = Subject(
+        name=payload.name,
+        short_name=payload.short_name,
+        slug=slug,
+        category=payload.category,
+        level=payload.level,
+        color=color,
+        default_duration_min=payload.default_duration_min,
+    )
+    session.add(obj)
+    await session.commit()
+    await session.refresh(obj)
+    return SubjectOut.model_validate(obj)
+
+
+@app.get("/subjects/{subject_id}", response_model=SubjectOut, tags=["subjects"])
+async def get_subject(
+    subject_id: int,
+    session: AsyncSession = Depends(get_session),
+    _=Depends(require_role("admin")),
+):
+    obj = (await session.execute(select(Subject).where(Subject.id == subject_id))).scalars().first()
+    if not obj:
+        raise HTTPException(status_code=404, detail="Subject not found")
+    return SubjectOut.model_validate(obj)
+
+
+@app.patch("/subjects/{subject_id}", response_model=SubjectOut, tags=["subjects"])
+async def patch_subject(
+    subject_id: int,
+    payload: SubjectPatchIn,
+    session: AsyncSession = Depends(get_session),
+    _=Depends(require_role("admin")),
+):
+    obj = (await session.execute(select(Subject).where(Subject.id == subject_id))).scalars().first()
+    if not obj:
+        raise HTTPException(status_code=404, detail="Subject not found")
+
+    if payload.name is not None:
+        obj.name = payload.name
+    if payload.short_name is not None:
+        obj.short_name = payload.short_name
+    if payload.slug is not None:
+        obj.slug = payload.slug or _slugify(payload.name or obj.name)
+    if payload.category is not None:
+        obj.category = payload.category
+    if payload.level is not None:
+        obj.level = payload.level
+    if payload.color is not None:
+        obj.color = payload.color if payload.color.startswith("#") else f"#{payload.color}"
+    if payload.default_duration_min is not None:
+        obj.default_duration_min = payload.default_duration_min
+
+    # проверка уникальности name/slug, если менялись
+    exists = (await session.execute(
+        select(Subject.id).where(
+            or_(Subject.name == obj.name, Subject.slug == obj.slug),
+            Subject.id != subject_id
+        )
+    )).first()
+    if exists:
+        raise HTTPException(status_code=409, detail="Subject with same name/slug already exists")
+
+    await session.commit()
+    await session.refresh(obj)
+    return SubjectOut.model_validate(obj)
+
+
+@app.delete("/subjects/{subject_id}", status_code=204, tags=["subjects"])
+async def delete_subject(
+    subject_id: int,
+    session: AsyncSession = Depends(get_session),
+    _=Depends(require_role("admin")),
+):
+    # запретим удаление, если предмет используется (у учителя или в слотах)
+    used_by_teacher = (await session.execute(
+        select(func.count()).select_from(TeacherSubject).where(TeacherSubject.subject_id == subject_id)
+    )).scalar_one()
+
+    used_in_slots = (await session.execute(
+        select(func.count()).select_from(TimeSlot).where(TimeSlot.subject_id == subject_id)
+    )).scalar_one()
+
+    if (used_by_teacher or used_in_slots):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Subject is in use and cannot be deleted",
+                "used_by_teacher_count": used_by_teacher,
+                "used_in_slots_count": used_in_slots,
+            },
+        )
+
+    res = await session.execute(delete(Subject).where(Subject.id == subject_id).returning(Subject.id))
+    deleted_id = res.scalar()
+    if not deleted_id:
+        raise HTTPException(status_code=404, detail="Subject not found")
+    await session.commit()
+    return
 
 # =========================
 #           ADMIN UI

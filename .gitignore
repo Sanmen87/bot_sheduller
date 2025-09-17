@@ -49,3 +49,7 @@ reports/
 # System
 .DS_Store
 Thumbs.db
+
+# Node.js (frontend)
+node_modules/
+src/web/node_modules/
