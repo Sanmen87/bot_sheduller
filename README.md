@@ -29,30 +29,6 @@ src/worker # Celery worker + задачи
 src/db # Модели и миграции Alembic
 
 
-## Быстрый старт
-
-1. Скопируйте настройки:
-   ```bash
-   cp .env.example .env
-Обязательно задайте TELEGRAM_BOT_TOKEN.
-
-Запустите сервисы:
-
-bash
-Копировать код
-docker compose up -d --build
-Примените миграции:
-
-bash
-Копировать код
-make migrate
-Проверьте API: http://localhost:8000/health
-
-Web-UI: http://localhost:5173
-
-dev-режим: docker compose up web-dev
-
-prod-режим: docker compose up web
 
 Бот поднимается как отдельный контейнер (bot). По умолчанию режим polling.
 
