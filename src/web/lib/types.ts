@@ -19,5 +19,10 @@ export interface Booking {
   status: 'new'|'confirmed'|'cancelled'
 }
 
-export interface Teacher { id: number; name: string }
+export interface Teacher {
+  id: number;
+  user_name: string;   // берём готовую строку с бэка
+  // опционально можно держать вложенный объект, если пригодится:
+  // user?: { id: number; first_name?: string; last_name?: string; username?: string; email?: string }
+}
 export interface User { id: number; email: string; role: 'admin'|'manager'|'teacher' }

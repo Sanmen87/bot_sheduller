@@ -117,6 +117,7 @@ class TeacherCardOut(BaseModel):
     default_mode: str | None = None
     bio: str | None = None
     subject_ids: list[int] = []
+    user_name: str
 
 # --- Subjects: Schemas ---
 class SubjectOut(BaseModel):
@@ -237,6 +238,17 @@ def auth_login(
 @app.get("/auth/me", response_model=MeOut, tags=["auth"])
 def auth_me(user: MeOut = Depends(current_user)):
     return user
+
+def _format_user_name(u: UserOut) -> str:
+    # Приоритет: "Имя Фамилия" → username → email → "user {id}"
+    parts = [p for p in [u.first_name, u.last_name] if p]
+    if parts:
+        return " ".join(parts)
+    if u.username:
+        return u.username
+    if u.email:
+        return u.email
+    return f"user {u.id}"
 
 # =========================
 #           SUBJECTS
@@ -957,24 +969,28 @@ async def create_teacher(
 
     # ответ
     subj_ids = payload.subject_ids or []
+    uo = UserOut.model_validate(user)
     return TeacherCardOut(
         id=payload.user_id,
-        user=UserOut.model_validate(user),
+        user=uo,
         default_mode=payload.default_mode,
         bio=payload.bio,
         subject_ids=subj_ids,
+        user_name=_format_user_name(uo),
     )
 
 @app.get("/teachers", response_model=list[TeacherCardOut], tags=["teachers"])
 async def list_teachers(
     response: Response,                             # ← первым
     q: str | None = Query(None, description="поиск по имени/username/email/phone"),
+    exclude_teachers: bool = Query(False, description="если True — вернуть только тех, у кого нет карточки Teacher"),
     subject_id: int | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_session),
     _=Depends(require_role("admin")),
 ):
+    from src.db.models import Teacher  # наверху уже импортируется, строка для ясности
     base = select(Teacher, User).join(User, User.id == Teacher.id)
 
     if q:
@@ -986,6 +1002,9 @@ async def list_teachers(
             User.email.ilike(like),
             User.phone.ilike(like),
         ))
+    if exclude_teachers:
+       # LEFT JOIN Teacher и фильтр тех, у кого карточки Teacher нет
+       base = base.outerjoin(Teacher, Teacher.id == User.id).where(Teacher.id.is_(None))
     if subject_id is not None:
         base = base.join(TeacherSubject, TeacherSubject.teacher_id == Teacher.id)\
                    .where(TeacherSubject.subject_id == subject_id)
@@ -1008,12 +1027,14 @@ async def list_teachers(
 
     out: list[TeacherCardOut] = []
     for t, u in rows:
+        uo = UserOut.model_validate(u)
         out.append(TeacherCardOut(
             id=t.id,
-            user=UserOut.model_validate(u),
+            user=uo,
             default_mode=t.default_mode,
             bio=t.bio,
             subject_ids=list(subs.get(t.id, [])) if subs.get(t.id) else [],
+            user_name=_format_user_name(uo),
         ))
     return out
 
