@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Регистрация</title>
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self' https://telegram.org; script-src 'self' https://telegram.org; style-src 'self' 'unsafe-inline'; connect-src 'none'; frame-ancestors https://web.telegram.org https://*.telegram.org; base-uri 'none'; form-action 'none';" />
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin:0; padding:16px; }
+    .card { max-width:460px; margin:4vh auto; padding:16px; border-radius:14px; box-shadow:0 6px 24px rgba(0,0,0,.08); background:var(--bg,#fff); }
+    .row { margin-bottom:12px; display:flex; flex-direction:column; }
+    label { font-size:14px; margin-bottom:6px; color:#111; }
+    input { padding:10px; border:1px solid #ddd; border-radius:8px; font-size:16px; }
+    button { width:100%; padding:12px; border:0; border-radius:10px; font-size:16px; cursor:pointer; }
+    .muted { font-size:12px; color:#777; margin-top:8px; }
+    .hidden { display:none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Регистрация</h2>
+
+    <div id="fallback" class="hidden">
+      <p>Эту форму нужно открыть из Telegram-бота.</p>
+      <p><a id="deeplink" href="https://t.me/<your_bot_username>?start=register">Открыть бота</a></p>
+    </div>
+
+    <form id="form">
+      <div class="row">
+        <label for="first_name">Фамилия </label>
+        <input id="first_name" required />
+      </div>
+      <div class="row">
+        <label for="last_name">Имя </label>
+        <input id="last_name" required />
+      </div>
+      <div class="row">
+        <label for="phone">Телефон</label>
+        <input id="phone" type="tel" placeholder="+7 999 123-45-67" />
+      </div>
+      <div class="row">
+        <label for="email">Email</label>
+        <input id="email" type="email" placeholder="you@example.com" />
+      </div>
+
+      <input id="username" type="hidden" />
+      <input id="nonce" type="hidden" />
+      <button id="submit">Отправить</button>
+      <p class="muted">Данные отправляются в чат-бота, без запросов к API.</p>
+    </form>
+  </div>
+
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script>
+  const tg = window.Telegram?.WebApp;
+  const params = new URLSearchParams(location.search);
+  const nonce = params.get('n') || '';
+  const $ = (id) => document.getElementById(id);
+
+  if (!tg) {
+    $('fallback').classList.remove('hidden');
+    $('form').classList.add('hidden');
+  } else {
+    tg.ready(); tg.expand();
+  }
+
+  function updateUsername(){
+    const first = $('first_name').value.trim();
+    const last  = $('last_name').value.trim();
+    const joiner = ' ';
+    $('username').value = `${first}${first&&last?joiner:''}${last}`.trim();
+  }
+  $('first_name').addEventListener('input', updateUsername);
+  $('last_name').addEventListener('input', updateUsername);
+  $('nonce').value = nonce;
+
+  function isEmail(v){ return !v || /[^@\s]+@[^@\s]+\.[^@\s]+/.test(v); }
+  function isPhone(v){ return !v || /^[+]?\d[\d\s\-()]{7,}$/.test(v); }
+
+  // ВАЖНО: submit на форму, а не click на кнопке
+  document.getElementById('form').addEventListener('submit', (e) => {
+    e.preventDefault(); // иначе упремся в CSP: form-action 'none'
+    if (!tg) return alert('Откройте форму из Telegram-бота.');
+
+    const data = {
+      nonce: $('nonce').value,
+      first_name: $('first_name').value.trim(), // фамилия
+      last_name:  $('last_name').value.trim(),  // имя
+      phone:      $('phone').value.trim(),
+      email:      $('email').value.trim(),
+      username:   $('username').value.trim(),
+    };
+
+    if (!data.first_name || !data.last_name) return tg.showAlert('Заполните фамилию и имя');
+    if (!isEmail(data.email)) return tg.showAlert('Некорректный email');
+    if (!isPhone(data.phone)) return tg.showAlert('Некорректный телефон');
+
+    tg.sendData(JSON.stringify(data));
+    tg.close();
+  });
+</script>
+</body>
+</html>
