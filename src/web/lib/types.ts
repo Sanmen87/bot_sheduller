@@ -1,5 +1,6 @@
 export type LessonType = 'individual' | 'group'
 export type Mode = 'online' | 'offline'
+export type UserRole = 'client'|'teacher'|'admin'|'guest'
 
 export interface Slot {
   id: number
@@ -32,4 +33,16 @@ export type Settings = {
   slot_duration_min: number
   reminder_minutes_before: number
   morning_poll_cron: string
+}
+
+export interface UserRow {
+  id: number
+  telegram_id: number
+  role: UserRole
+  first_name?: string | null
+  last_name?: string | null
+  username?: string | null
+  phone?: string | null
+  email?: string | null
+  is_verified: boolean
 }

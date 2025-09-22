@@ -14,10 +14,11 @@ export default function Header() {
       <div className="ml-auto flex items-center gap-4 text-sm">
         {authed ? (
           <>
-            <Link className="underline" href="/settings">Настройки</Link>
+            <Link className="underline" href="/users">Пользователи</Link>
+            <Link className="underline" href="/teachers">Учителя</Link>            
             <Link className="underline" href="/bookings">Бронирования</Link>
             <Link className="underline" href="/slots">Слоты</Link>
-            <Link className="underline" href="/teachers">Учителя</Link>
+           <Link className="underline" href="/settings">Настройки</Link>
             <Link className="underline" href="/reports/teacher-load">Отчёты</Link>
             <button
               className="rounded border px-2 py-1"

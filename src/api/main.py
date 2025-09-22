@@ -85,6 +85,7 @@ class UserOut(BaseModel):
     username: str | None = None
     phone: str | None = None
     email: str | None = None
+    is_verified: bool
     class Config:
         from_attributes = True
 
@@ -104,6 +105,7 @@ class UserPatchIn(BaseModel):
     username: str | None = None
     phone: str | None = None
     email: str | None = None
+    is_verified: bool | None = None
 
 class TeacherCreateIn(BaseModel):
     user_id: int
@@ -895,6 +897,7 @@ async def report_teacher_load(
 async def list_users(
     response: Response,                             # ← важно: первым, без дефолта
     role: UserRole | None = Query(None),
+    is_verified: bool | None = Query(None),
     q: str | None = Query(None, description="поиск по имени/username/email/phone"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -905,6 +908,8 @@ async def list_users(
 
     if role is not None:
         base = base.where(User.role == role)
+    if is_verified is not None:
+        base = base.where(User.is_verified == is_verified)
     if q:
         like = f"%{q}%"
         base = base.where(or_(
@@ -968,7 +973,7 @@ async def patch_user(
         raise HTTPException(status_code=404, detail="User not found")
 
     data = {}
-    for field in ("role", "first_name", "last_name", "username", "phone", "email"):
+    for field in ("role", "first_name", "last_name", "username", "phone", "email", "is_verified"):
         val = getattr(payload, field)
         if val is not None:
             data[field] = val

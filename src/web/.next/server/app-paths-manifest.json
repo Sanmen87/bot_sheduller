@@ -1,7 +1,5 @@
 {
-  "/settings/page": "app/settings/page.js",
-  "/bookings/page": "app/bookings/page.js",
-  "/slots/page": "app/slots/page.js",
-  "/teachers/page": "app/teachers/page.js",
-  "/reports/teacher-load/page": "app/reports/teacher-load/page.js"
+  "/users/page": "app/users/page.js",
+  "/login/page": "app/login/page.js",
+  "/teachers/page": "app/teachers/page.js"
 }
