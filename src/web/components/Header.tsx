@@ -14,6 +14,7 @@ export default function Header() {
       <div className="ml-auto flex items-center gap-4 text-sm">
         {authed ? (
           <>
+            <Link className="underline" href="/settings">Настройки</Link>
             <Link className="underline" href="/bookings">Бронирования</Link>
             <Link className="underline" href="/slots">Слоты</Link>
             <Link className="underline" href="/teachers">Учителя</Link>

@@ -1,2 +1,3 @@
 docker compose logs -f api - лок контейнеров докер
 docker compose restart web-dev - рестрат контейнера
+docker compose build web-dev - перезборка одного контейнера

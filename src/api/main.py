@@ -24,7 +24,7 @@ from jose import jwt, JWTError
 from src.db.session import get_session
 from src.db.models import (
     Subject, TeacherSubject, TimeSlot, Booking,
-    SlotStatus, User, BookingStatus, Teacher, UserRole, LessonType
+    SlotStatus, User, BookingStatus, Teacher, UserRole, LessonType, Setting
 )
 
 # =========================
@@ -150,6 +150,28 @@ class SubjectPatchIn(BaseModel):
     color: constr(strip_whitespace=True, pattern=r"^#?[0-9a-fA-F]{6}$") | None = None
     default_duration_min: conint(ge=1, le=24*60) | None = None
 
+# ========================настройка==================
+class SettingsOut(BaseModel):
+    slot_duration_min: int
+    reminder_minutes_before: int
+    morning_poll_cron: str
+
+class SettingsIn(BaseModel):
+    slot_duration_min: int | None = None
+    reminder_minutes_before: int | None = None
+    morning_poll_cron: str | None = None
+
+async def _get_setting(session: AsyncSession, key: str, default: str | None = None) -> str | None:
+    row = (await session.execute(select(Setting.value).where(Setting.key == key))).scalar()
+    return row if row is not None else default
+
+async def _upsert_setting(session: AsyncSession, key: str, value: str | None):
+    exists = (await session.execute(select(Setting.id).where(Setting.key == key))).scalar()
+    if exists:
+        await session.execute(update(Setting).where(Setting.key == key).values(value=value))
+    else:
+        await session.execute(insert(Setting).values(key=key, value=value))
+# =========================================================
 
 def _create_access_token(data: dict, minutes: int | None = None) -> str:
     exp_minutes = minutes if minutes is not None else ACCESS_TOKEN_EXPIRE_MINUTES
@@ -249,6 +271,42 @@ def _format_user_name(u: UserOut) -> str:
     if u.email:
         return u.email
     return f"user {u.id}"
+
+# =========================settingsRouts=================
+
+@app.get("/admin/settings", response_model=SettingsOut, tags=["admin"])
+async def admin_get_settings(
+    session: AsyncSession = Depends(get_session),
+    _=Depends(require_role("admin")),
+):
+    return SettingsOut(
+        slot_duration_min=int((await _get_setting(session, "slot_duration_min", os.getenv("SLOT_DURATION_MIN", "45"))) or 45),
+        reminder_minutes_before=int((await _get_setting(session, "reminder_minutes_before", os.getenv("REMINDER_MINUTES_BEFORE", "30"))) or 30),
+        morning_poll_cron=(await _get_setting(session, "morning_poll_cron", os.getenv("MORNING_POLL_CRON", "30 7 * * *"))) or "30 7 * * *",
+    )
+
+@app.put("/admin/settings", response_model=SettingsOut, tags=["admin"])
+async def admin_put_settings(
+    payload: SettingsIn,
+    session: AsyncSession = Depends(get_session),
+    _=Depends(require_role("admin")),
+):
+    # простая валидация
+    if payload.slot_duration_min is not None and payload.slot_duration_min <= 0:
+        raise HTTPException(status_code=400, detail="slot_duration_min must be > 0")
+    if payload.reminder_minutes_before is not None and payload.reminder_minutes_before <= 0:
+        raise HTTPException(status_code=400, detail="reminder_minutes_before must be > 0")
+
+    if payload.slot_duration_min is not None:
+        await _upsert_setting(session, "slot_duration_min", str(payload.slot_duration_min))
+    if payload.reminder_minutes_before is not None:
+        await _upsert_setting(session, "reminder_minutes_before", str(payload.reminder_minutes_before))
+    if payload.morning_poll_cron is not None:
+        await _upsert_setting(session, "morning_poll_cron", payload.morning_poll_cron)
+
+    await session.commit()
+    return await admin_get_settings(session)  # вернуть актуальные значения
+
 
 # =========================
 #           SUBJECTS
@@ -396,7 +454,8 @@ async def create_teacher_slots(
     # 1) Валидация входных данных
     if payload.end_time <= payload.start_time:
         raise HTTPException(status_code=400, detail="end_time must be greater than start_time")
-    step_min = payload.step_min or int(os.getenv("SLOT_DURATION_MIN", "45"))
+    db_step = await _get_setting(session, "slot_duration_min", os.getenv("SLOT_DURATION_MIN", "45"))
+    step_min = payload.step_min or int(db_step or 45)
     if step_min <= 0:
         raise HTTPException(status_code=400, detail="step_min must be positive")
     step = timedelta(minutes=step_min)

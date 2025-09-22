@@ -194,3 +194,12 @@ class Booking(Base):
 
     def __repr__(self) -> str:
         return f"<Booking id={self.id} slot={self.slot_id} client={self.client_id} status={self.status}>"
+    
+class Setting(Base):
+    __tablename__ = "settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    key: Mapped[str] = mapped_column(String(100), nullable=False)
+    value: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (UniqueConstraint("key", name="uq_settings_key"),)

@@ -19,6 +19,7 @@ export interface Booking {
   status: 'new'|'confirmed'|'cancelled'
 }
 
+
 export interface Teacher {
   id: number;
   user_name: string;   // берём готовую строку с бэка
@@ -26,3 +27,9 @@ export interface Teacher {
   // user?: { id: number; first_name?: string; last_name?: string; username?: string; email?: string }
 }
 export interface User { id: number; email: string; role: 'admin'|'manager'|'teacher' }
+
+export type Settings = {
+  slot_duration_min: number
+  reminder_minutes_before: number
+  morning_poll_cron: string
+}

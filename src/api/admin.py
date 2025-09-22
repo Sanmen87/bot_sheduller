@@ -7,7 +7,7 @@ from markupsafe import Markup
 from sqlalchemy import select, create_engine
 from sqlalchemy.orm import Session
 
-from src.db.models import User, Teacher, Subject, TimeSlot, Booking
+from src.db.models import User, Teacher, Subject, TimeSlot, Booking, Setting
 
 
 def _badge(text: str, color: str) -> Markup:
@@ -151,6 +151,27 @@ class BookingAdmin(ModelView, model=Booking):
     }
 
 
+class SettingAdmin(ModelView, model=Setting):
+    name = "Setting"
+    name_plural = "Settings"
+    icon = "fa fa-cog"
+
+    # какие колонки показывать в списке
+    column_list = [Setting.id, Setting.key, Setting.value]
+    column_searchable_list = [Setting.key, Setting.value]
+    column_sortable_list = [Setting.id, Setting.key]
+
+    # поля формы
+    form_columns = [Setting.key, Setting.value]
+
+    # защита от дублей ключей
+    form_args = {
+        "key": {"render_kw": {"placeholder": "slot_duration_min"}},
+        "value": {"render_kw": {"placeholder": "45"}},
+    }
+
+
+
 def init_admin(app):
     """
     Инициализатор админки. Вызывайте из main.py:  init_admin(app)
@@ -161,4 +182,5 @@ def init_admin(app):
     admin.add_view(SubjectAdmin)
     admin.add_view(TimeSlotAdmin)
     admin.add_view(BookingAdmin)
+    admin.add_view(SettingAdmin)
     return admin

@@ -7,7 +7,7 @@ export const metadata = { title: 'CRM Schedule' }
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="ru">
+    <html lang="ru" suppressHydrationWarning>
       <body className="min-h-dvh bg-slate-50 text-slate-900">
         <AuthBootstrap />
         <div className="mx-auto max-w-6xl p-4">
