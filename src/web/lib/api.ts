@@ -46,3 +46,39 @@ export async function getWithCount<T>(path: string): Promise<{data: T; total: nu
   const data = await res.json()
   return { data, total }
 }
+
+export async function getSlotsByDate(dateISO: string, teacherIds?: number[]) {
+  const params = new URLSearchParams();
+  // Вариант 1 — если бек принимает `date`
+  params.set('date', dateISO); 
+  if (teacherIds?.length) params.set('teacher_id', teacherIds.join(','));
+
+  // Если ваш API использует from/to, просто раскомментируйте эти две строки и удалите set('date',...)
+  // params.set('date_from', dateISO);
+  // params.set('date_to', dateISO);
+
+  const res = await fetch(`${API_BASE}/slots?${params.toString()}`, { credentials: 'include' });
+  if (!res.ok) throw new Error('Failed to load slots');
+  return res.json();
+}
+
+export async function patchSlot(id: number, payload: {
+  start_time?: string; // "HH:MM"
+  end_time?: string;
+  subject_id?: number;
+  lesson_type?: 'individual'|'group'|string|null;
+  mode?: 'online'|'offline'|null;
+  status?: 'available'|'booked'|'canceled'|'hidden'|'tentative';
+}) {
+  const res = await fetch(`${API_BASE}/slots/${id}`, {
+    method: 'PATCH',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Ошибка сохранения: ${res.status} ${text}`);
+  }
+  return res.json();
+}
