@@ -5,11 +5,14 @@ export type UserRole = 'client'|'teacher'|'admin'|'guest'
 export interface Slot {
   id: number
   teacher_id: number
-  start: string
-  end: string
+  subject_id: number
+  date: string            // "YYYY-MM-DD"
+  start_time: string      // "HH:MM:SS"
+  end_time: string        // "HH:MM:SS"
   capacity: number
-  lesson_type: LessonType
-  mode: Mode
+  lesson_type: 'individual' | 'group'
+  mode: 'online' | 'offline'
+  status: 'available' | 'booked' | 'canceled' | 'hidden' | 'tentative'
   free_spots?: number
 }
 

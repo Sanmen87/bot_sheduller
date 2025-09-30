@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Input } from '@/components/ui/input'
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from '@/components/ui/select'
 import { toast } from 'sonner'
+import { patchSlot, createSlotsByInterval } from '@/lib/api'
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Константы диапазона и шага времени
@@ -32,6 +33,10 @@ type Teacher = {
 type Subject = { id: number; name: string }
 
 type SlotStatus = 'available' | 'booked' | 'canceled' | 'hidden' | 'tentative'
+
+type LessonType = 'individual'|'group' 
+
+type ModeType = 'online'|'offline'
 
 type Slot = {
   id: number
@@ -70,11 +75,6 @@ function minutesFromMidnight(t: string) {
   return H * 60 + M
 }
 
-function toTimeInput(value: string) {
-  // 'HH:MM:SS' -> 'HH:MM'
-  const [h, m] = value.split(':')
-  return `${h}:${m}`
-}
 
 const statusColor: Record<SlotStatus, string> = {
   available: 'bg-emerald-500/90 hover:bg-emerald-600',
@@ -106,13 +106,15 @@ async function fetchSlotsForDate(date: string, teacherIds?: number[]): Promise<S
   if (teacherIds && teacherIds.length) {
     const all: Slot[] = []
     for (const id of teacherIds) {
-      const data = await api.get(`/teachers/${id}/slots`, { params: { date_from: date, date_to: date } })
+      const qs = new URLSearchParams({ date_from: date, date_to: date }).toString()
+      const data = await api.get(`/teachers/${id}/slots?${qs}`)
       const items = data?.items ?? data ?? []
       all.push(...items)
     }
     return all
   }
-  const data = await api.get('/admin/calendar', { params: { from: date, to: date } })
+  const qs = new URLSearchParams({ from: date, to: date }).toString()
+  const data = await api.get(`/admin/calendar?${qs}`)
   return data?.items ?? data ?? []
 }
 
@@ -123,6 +125,7 @@ async function createSlotsByInterval(params: {
   start_time: string // 'HH:MM'
   end_time: string   // 'HH:MM'
   step_min?: number
+  lesson_type: 'individual' | 'group'
   capacity: number
   mode: 'online' | 'offline'
   status: SlotStatus
@@ -134,6 +137,7 @@ async function createSlotsByInterval(params: {
     start_time: `${start_time}:00`,
     end_time: `${end_time}:00`,
     step_min,
+    lesson_type,
     capacity,
     mode,
     status,
@@ -141,12 +145,6 @@ async function createSlotsByInterval(params: {
   })
 }
 
-async function patchSlot(id: number, patch: Partial<Slot>) {
-  const body: any = { ...patch }
-  if (body.start_time && body.start_time.length === 5) body.start_time = body.start_time + ':00'
-  if (body.end_time && body.end_time.length === 5) body.end_time = body.end_time + ':00'
-  return api.patch(`/slots/${id}`, body)
-}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // UI: вспомогательные компоненты
@@ -201,7 +199,13 @@ function TeacherHeader({ t }: { t: Teacher }) {
 // ──────────────────────────────────────────────────────────────────────────────
 // Modal: создание/редактирование слота
 // ──────────────────────────────────────────────────────────────────────────────
-function SlotModal(props: {
+function toTimeInput(v?: string | null): string {
+  // из "HH:MM:SS" → "HH:MM"
+  if (!v) return ''
+  return v.length >= 5 ? v.slice(0, 5) : v
+}
+
+export function SlotModal(props: {
   open: boolean
   onOpenChange: (v: boolean) => void
   mode: 'create' | 'edit'
@@ -212,69 +216,102 @@ function SlotModal(props: {
   onSaved: () => void
 }) {
   const { open, onOpenChange, mode, teacher, date, subjects, initial, onSaved } = props
-
-  // локальные состояния
-  const [subjectId, setSubjectId] = useState<number | undefined>(undefined)
-  const [start, setStart] = useState<string>('09:00')
-  const [end, setEnd] = useState<string>('10:00')
-  const [capacity, setCapacity] = useState<number>(1)
-  const [formatMode, setFormatMode] = useState<'online' | 'offline'>('online')
-  const [status, setStatus] = useState<SlotStatus>('available')
-
   const isEdit = mode === 'edit'
 
-  // 🔧 СИНХРОНИЗАЦИЯ ПРИ ОТКРЫТИИ/СМЕНЕ initial
+  // --- локальное состояние формы
+  const [subjectId, setSubjectId] = useState<number | undefined>(undefined)
+  const [start, setStart] = useState<string>('09:00') // HH:MM
+  const [end, setEnd] = useState<string>('10:00')     // HH:MM
+  const [lessonType, setLessonType] = useState<LessonType>('individual')
+  const [capacity, setCapacity] = useState<number>(1)
+  const [modeValue, setModeValue] = useState<ModeType>('online')
+  const [status, setStatus] = useState<SlotStatus>('available')
+  const [saving, setSaving] = useState(false)
+  
+  // --- префилл при открытии/смене initial
   useEffect(() => {
     if (!open) return
     setSubjectId(initial?.subject_id ?? undefined)
     setStart(initial?.start_time ? toTimeInput(initial.start_time) : '09:00')
     setEnd(initial?.end_time ? toTimeInput(initial.end_time) : '10:00')
-    setCapacity(initial?.capacity ?? 1)
-    setFormatMode((initial?.mode as any) ?? 'online')
-    setStatus((initial?.status as any) ?? 'available')
-  }, [open, initial?.id]) // важно: зависимость от id слота
+    // lesson_type и capacity: если capacity > 1 → group, иначе individual
+    const lt: LessonType =
+      (initial?.lesson_type as LessonType) ??
+      ((initial?.capacity && initial.capacity > 1) ? 'group' : 'individual')
+    setLessonType(lt)
+    setCapacity(
+      lt === 'individual' ? 1 : Math.max(2, initial?.capacity ?? 2)
+    )
+    setModeValue((initial?.mode as ModeType) ?? 'online')
+    setStatus((initial?.status as SlotStatus) ?? 'available')
+    // важно: зависимость от id слота, чтобы при выборе другого слота обновлялись поля
+  }, [open, initial?.id])
+  
+  // --- вспомогательные вычисления
+  const subjectValue = subjectId != null ? String(subjectId) : undefined
+  const canSubmit = useMemo(() => {
+    if (!teacher?.id) return false
+    if (!date) return false
+    if (!subjectId) return false
+    if (!start || !end) return false
+    // простая клиентская проверка диапазона
+    return start < end
+  }, [teacher?.id, date, subjectId, start, end])
+
+  // --- обработчик смены типа занятия
+  function onChangeLessonType(v: LessonType) {
+    setLessonType(v)
+    if (v === 'individual') {
+      setCapacity(1)
+    } else {
+      setCapacity((prev) => Math.max(2, prev || 2))
+    }
+  }
 
   async function onSubmit() {
     try {
-      if (!teacher?.id) throw new Error('Не выбран преподаватель')
-      if (!subjectId) throw new Error('Выбери предмет')
+      if (!canSubmit) {
+        toast.error('Проверьте корректность полей формы')
+        return
+      }
+      setSaving(true)
 
       if (isEdit && initial?.id) {
-        // 👇 отправляем все поля, даже если поменяли только время
+        // отправляем все ключевые поля, включая lesson_type
         await patchSlot(initial.id, {
-          subject_id: subjectId,
-          start_time: start,
+          subject_id: subjectId!,
+          start_time: start, // нормализуется до HH:MM:SS в api.patchSlot
           end_time: end,
+          lesson_type: lessonType,
           capacity,
-          mode: formatMode,
+          mode: modeValue,
           status,
         })
       } else {
         await createSlotsByInterval({
-          teacher_id: teacher.id,
+          teacher_id: teacher!.id,
           date,
-          subject_id: subjectId,
-          start_time: start,
+          subject_id: subjectId!,
+          start_time: start, // "HH:MM" — нормализуйте внутри createSlotsByInterval аналогично
           end_time: end,
-          step_min: undefined,
+          step_min: undefined, // если не нужен шаг
+          lesson_type: lessonType,
           capacity,
-          mode: formatMode,
+          mode: modeValue,
           status,
         })
       }
 
-      onOpenChange(false)
       toast.success(isEdit ? 'Слот обновлён' : 'Слот(ы) создан(ы)')
+      onOpenChange(false)
       onSaved()
     } catch (e: any) {
-      // покажем текст ответа бэкенда, если есть
       const msg = e?.message || e?.detail || 'Ошибка сохранения'
       toast.error(msg)
+    } finally {
+      setSaving(false)
     }
   }
-
-  // чтобы placeholder работал, для shadcn Select value должен быть undefined, а не ''.
-  const subjectValue = subjectId != null ? String(subjectId) : undefined
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -301,7 +338,11 @@ function SlotModal(props: {
 
           <div>
             <label className="text-xs text-gray-500">Предмет</label>
-            <Select value={subjectValue} onValueChange={(v) => setSubjectId(Number(v))}>
+            <Select
+                key={`subject-${open}-${initial?.id}-${subjectValue ?? 'none'}`}
+                value={subjectValue}
+                onValueChange={(v) => setSubjectId(Number(v))} 
+            >
               <SelectTrigger className="w-full">
                 <SelectValue placeholder="Выбери предмет" />
               </SelectTrigger>
@@ -314,15 +355,16 @@ function SlotModal(props: {
               </SelectContent>
             </Select>
           </div>
-
+          
           <div className="grid grid-cols-3 gap-2 items-end">
             <div>
               <label className="text-xs text-gray-500">Тип занятия</label>
-              <Select
-                value={capacity > 1 ? 'group' : 'individual'}
-                onValueChange={(v) => setCapacity(v === 'group' ? Math.max(2, capacity || 6) : 1)}
+              {/* Тип занятия */}
+              <Select 
+                value={lessonType ?? 'individual'} 
+                onValueChange={(v: LessonType) => onChangeLessonType(v)}
               >
-                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                <SelectTrigger className="w-full"><SelectValue placeholder="Тип" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="individual">Индивидуально</SelectItem>
                   <SelectItem value="group">Групповое</SelectItem>
@@ -332,8 +374,11 @@ function SlotModal(props: {
 
             <div>
               <label className="text-xs text-gray-500">Формат</label>
-              <Select value={formatMode} onValueChange={(v: 'online' | 'offline') => setFormatMode(v)}>
-                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+              <Select 
+                value={modeValue ?? 'online'} 
+                onValueChange={(v: ModeType) => setModeValue(v)}
+              >
+                <SelectTrigger className="w-full"><SelectValue placeholder="Формат" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="online">Онлайн</SelectItem>
                   <SelectItem value="offline">Оффлайн</SelectItem>
@@ -343,19 +388,23 @@ function SlotModal(props: {
 
             <div>
               <label className="text-xs text-gray-500">Статус</label>
-              <Select value={status} onValueChange={(v: SlotStatus) => setStatus(v)}>
-                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+              <Select 
+                value={status ?? 'available'} 
+                onValueChange={(v: SlotStatus) => setStatus(v)}
+              >
+                <SelectTrigger className="w-full"><SelectValue placeholder="Статус" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="available">Доступен</SelectItem>
                   <SelectItem value="tentative">Предварительный</SelectItem>
                   <SelectItem value="hidden">Скрыт</SelectItem>
                   <SelectItem value="canceled">Отменён</SelectItem>
+                  {/* Если нужно — можно добавить booked, но редактирование в booked обычно ограничивают */}
                 </SelectContent>
               </Select>
             </div>
           </div>
 
-          {capacity > 1 && (
+          {lessonType === 'group' && (
             <div className="grid grid-cols-[120px_1fr] items-center gap-2">
               <div className="text-sm">Вместимость</div>
               <Input
@@ -363,15 +412,20 @@ function SlotModal(props: {
                 min={2}
                 max={30}
                 value={capacity}
-                onChange={(e) => setCapacity(Number(e.target.value) || 2)}
+                onChange={(e) => {
+                  const v = Number(e.target.value) || 2
+                  setCapacity(Math.max(2, Math.min(30, v)))
+                }}
               />
             </div>
           )}
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>Отмена</Button>
-          <Button onClick={onSubmit}>{isEdit ? 'Сохранить' : 'Создать'}</Button>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>Отмена</Button>
+          <Button onClick={onSubmit} disabled={!canSubmit || saving}>
+            {isEdit ? 'Сохранить' : 'Создать'}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -403,6 +457,12 @@ function SlotsInner() {
   const [editingSlot, setEditingSlot] = useState<Slot | undefined>(undefined)
 
   const dateStr = useMemo(() => fmtDate(date), [date])
+  // map предметов: id -> name
+  const subjectsMap = useMemo(() => {
+    const m: Record<number, string> = {}
+    for (const s of subjects) m[s.id] = s.name
+    return m
+  }, [subjects])
 
   useEffect(() => {
     ;(async () => {
@@ -487,6 +547,7 @@ function SlotsInner() {
               slots={slotsByTeacher[t.id] ?? []}
               onEmptyCellClick={(m) => onEmptyCellClick(t, m)}
               onSlotClick={onSlotClick}
+              subjectsMap={subjectsMap}
             />
           ))}
 
@@ -518,12 +579,14 @@ function TeacherColumn({
   slots,
   onEmptyCellClick,
   onSlotClick,
+  subjectsMap,
 }: {
   teacher: Teacher
   date: string
   slots: Slot[]
   onEmptyCellClick: (minuteFrom: number) => void
   onSlotClick: (s: Slot) => void
+  subjectsMap: Record<number, string>
 }) {
   const totalHeight = (HOURS_END - HOURS_START) * 60 * MINUTE_PX
   const bgRows = useMemo(() => Array.from({ length: (HOURS_END - HOURS_START) * 4 }, () => 1), [])
@@ -557,19 +620,28 @@ function TeacherColumn({
         title="Двойной клик — создать слот"
       >
         {slots.map((s) => (
-          <SlotBlock key={s.id} slot={s} onClick={() => onSlotClick(s)} />
+          <SlotBlock 
+            key={s.id} 
+            slot={s} 
+            subjectName={subjectsMap[s.subject_id] ?? ''}
+            onClick={() => onSlotClick(s)} 
+      />
         ))}
       </div>
     </div>
   )
 }
 
-function SlotBlock({ slot, onClick }: { slot: Slot; onClick: () => void }) {
+function SlotBlock({ slot, subjectName, onClick }: { slot: Slot; subjectName: string; onClick: () => void }) {
   const startMin = minutesFromMidnight(slot.start_time)
   const endMin = minutesFromMidnight(slot.end_time)
   const top = (startMin - HOURS_START * 60) * MINUTE_PX
   const height = Math.max(20, (endMin - startMin) * MINUTE_PX - 2)
-  const freeTitle = `${slot.mode ?? ''} ${slot.status} · ${slot.capacity > 1 ? `группа до ${slot.capacity}` : 'индив.'}`
+
+  const freeTitle = 
+    `${subjectName ? subjectName + ' · ' : ''}` +
+    `${slot.mode ?? ''} ${slot.status} · ` +
+    `${slot.capacity > 1 ? `группа до ${slot.capacity}` : 'индив.'}`
 
   return (
     <div
@@ -582,10 +654,19 @@ function SlotBlock({ slot, onClick }: { slot: Slot; onClick: () => void }) {
       title={freeTitle}
     >
       <div className="flex items-center justify-between gap-2">
-        <div className="font-medium truncate">{toTimeInput(slot.start_time)}–{toTimeInput(slot.end_time)}</div>
+        <div className="font-medium truncate">
+          {toTimeInput(slot.start_time)}–{toTimeInput(slot.end_time)}
+        </div>
         <div className="uppercase text-[10px] opacity-90">{slot.mode}</div>
       </div>
-      <div className="truncate opacity-90">{slot.capacity > 1 ? `Группа (${slot.capacity})` : 'Индивидуально'}</div>
+
+      {/* 1-я строка: предмет */}
+      <div className="truncate opacity-90">{subjectName}</div>
+
+      {/* 2-я строка: тип занятия */} 
+      <div className="truncate opacity-90">
+        {slot.capacity > 1 ? `Группа (${slot.capacity})` : 'Индивидуально'}
+      </div>
     </div>
   )
 }

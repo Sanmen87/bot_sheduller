@@ -6,6 +6,7 @@ import io, csv
 import re
 import unicodedata
 from datetime import date as dt_date, time as dt_time, timedelta, datetime as dt_datetime, timezone
+from datetime import time as dt_time, date as dt_date, datetime as dt_datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import FastAPI, Depends, HTTPException, Body, Query, Response, Request
@@ -601,6 +602,10 @@ async def teacher_slots(
     ]
 
 class PatchSlotIn(BaseModel):
+    start_time: str | None = None
+    end_time: str | None = None
+    subject_id: int | None = None
+    mode: str | None = None    
     status: SlotStatus | None = None
     capacity: int | None = None
     lesson_type: str | None = None
@@ -615,43 +620,68 @@ async def patch_slot(
     if not slot:
         raise HTTPException(status_code=404, detail="Slot not found")
 
-    # текущее число занятых мест
+    # Текущее число занятых мест (для валидации capacity)
     used = (await session.execute(
         select(func.count()).select_from(Booking)
         .where(Booking.slot_id == slot_id)
         .where(Booking.status != BookingStatus.canceled)
     )).scalar_one()
 
-    # смена типа занятия (если передан)
+    # --- ВРЕМЯ ---
+    def _to_hms(s: str) -> str:
+        return s if len(s) == 8 else (s + ":00")  # "HH:MM" -> "HH:MM:00"
+
+    if payload.start_time is not None:
+        slot.start_time = _to_hms(payload.start_time)
+    if payload.end_time is not None:
+        slot.end_time = _to_hms(payload.end_time)
+    if (payload.start_time is not None) or (payload.end_time is not None):
+        if slot.end_time <= slot.start_time:
+            raise HTTPException(status_code=400, detail="end_time must be greater than start_time")
+
+    # --- ПРЕДМЕТ ---
+    if payload.subject_id is not None:
+        slot.subject_id = payload.subject_id
+
+    # --- РЕЖИМ ---
+    if payload.mode is not None:
+        if payload.mode not in ("online", "offline"):
+            raise HTTPException(status_code=400, detail="mode must be 'online' or 'offline'")
+        slot.mode = payload.mode
+
+    # --- ТИП ЗАНЯТИЯ ---
     if payload.lesson_type is not None:
         try:
             slot.lesson_type = LessonType(payload.lesson_type)
         except ValueError:
             raise HTTPException(status_code=400, detail="lesson_type must be 'individual' or 'group'")
 
-    # смена capacity (если передан)
+    # --- CAPACITY ---
     if payload.capacity is not None:
         if payload.capacity < used:
             raise HTTPException(status_code=400, detail=f"capacity < used ({used})")
         slot.capacity = payload.capacity
 
-    # согласованность type ↔ capacity
+    # Согласованность тип ↔ вместимость
     if slot.lesson_type == LessonType.individual and slot.capacity != 1:
         raise HTTPException(status_code=400, detail="For individual lessons capacity must be 1")
     if slot.lesson_type == LessonType.group and slot.capacity < 2:
         raise HTTPException(status_code=400, detail="For group lessons capacity must be >= 2")
 
+    # --- СТАТУС ---
     if payload.status is not None:
         slot.status = payload.status
 
     await session.commit()
 
+    # Пересчитать свободные места
     used = (await session.execute(
         select(func.count()).select_from(Booking)
         .where(Booking.slot_id == slot_id)
         .where(Booking.status != BookingStatus.canceled)
     )).scalar_one()
-    free_spots = (slot.capacity - used)
+    free_spots = slot.capacity - used
+
     return SlotOut(
         id=slot.id,
         teacher_id=slot.teacher_id,
