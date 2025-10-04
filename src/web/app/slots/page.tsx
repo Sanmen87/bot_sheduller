@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import clsx from 'clsx'
 import { RequireAuth, useAuth } from '@/lib/auth'
 import { api } from '@/lib/api'
@@ -9,7 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Input } from '@/components/ui/input'
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from '@/components/ui/select'
 import { toast } from 'sonner'
-import { patchSlot, createSlotsByInterval } from '@/lib/api'
+import { patchSlot, createSlotsByInterval, deleteSlot } from '@/lib/api'
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Константы диапазона и шага времени
@@ -48,6 +48,7 @@ type Slot = {
   mode?: 'online' | 'offline'
   capacity: number
   status: SlotStatus
+  lesson_type?: 'individual' | 'group'
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -88,8 +89,9 @@ const statusColor: Record<SlotStatus, string> = {
 /** API */
 // ──────────────────────────────────────────────────────────────────────────────
 async function fetchTeachers(): Promise<Teacher[]> {
-  const res = await api.get('/teachers')
-  return (res?.items ?? res ?? []).map((t: any) => ({
+  const res = await api.get<{ items?: any[] } | any[]>('/teachers')
+  const list = Array.isArray(res) ? res : (res?.items ?? [])
+  return list.map((t: any) => ({
     id: t.id ?? t.user_id ?? t.teacher_id,
     user_id: t.user_id ?? t.id,
     user_name: t.user_name ?? t.name,
@@ -98,8 +100,8 @@ async function fetchTeachers(): Promise<Teacher[]> {
 }
 
 async function fetchSubjects(): Promise<Subject[]> {
-  const res = await api.get('/subjects')
-  return res?.items ?? res ?? []
+  const res = await api.get<{ items?: Subject[] } | Subject[]>('/subjects')
+  return Array.isArray(res) ? res : (res?.items ?? [])
 }
 
 async function fetchSlotsForDate(date: string, teacherIds?: number[]): Promise<Slot[]> {
@@ -107,42 +109,15 @@ async function fetchSlotsForDate(date: string, teacherIds?: number[]): Promise<S
     const all: Slot[] = []
     for (const id of teacherIds) {
       const qs = new URLSearchParams({ date_from: date, date_to: date }).toString()
-      const data = await api.get(`/teachers/${id}/slots?${qs}`)
-      const items = data?.items ?? data ?? []
+      const data = await api.get<{ items?: Slot[] } | Slot[]>(`/teachers/${id}/slots?${qs}`)
+      const items = Array.isArray(data) ? data : (data?.items ?? [])
       all.push(...items)
     }
     return all
   }
   const qs = new URLSearchParams({ from: date, to: date }).toString()
-  const data = await api.get(`/admin/calendar?${qs}`)
-  return data?.items ?? data ?? []
-}
-
-async function createSlotsByInterval(params: {
-  teacher_id: number
-  date: string
-  subject_id: number
-  start_time: string // 'HH:MM'
-  end_time: string   // 'HH:MM'
-  step_min?: number
-  lesson_type: 'individual' | 'group'
-  capacity: number
-  mode: 'online' | 'offline'
-  status: SlotStatus
-}) {
-  const { teacher_id, date, subject_id, start_time, end_time, step_min, capacity, mode, status } = params
-  return api.post(`/teachers/${teacher_id}/slots`, {
-    date,
-    subject_id,
-    start_time: `${start_time}:00`,
-    end_time: `${end_time}:00`,
-    step_min,
-    lesson_type,
-    capacity,
-    mode,
-    status,
-    skip_conflicts: true,
-  })
+  const data = await api.get<{ items?: Slot[] } | Slot[]>(`/admin/calendar?${qs}`)
+  return Array.isArray(data) ? data : (data?.items ?? [])
 }
 
 
@@ -165,13 +140,21 @@ function DateSwitcher({ date, setDate }: { date: Date; setDate: (d: Date) => voi
   )
 }
 
-function TimeAxis() {
-  const hours = []
+function TimeAxis({ nowMinuteAbs }: { nowMinuteAbs: number | null }) {
+  const hours: number[] = []
   for (let h = HOURS_START; h <= HOURS_END; h++) hours.push(h)
-  const totalHeight = (HOURS_END - HOURS_START + 1) * 60 * MINUTE_PX
+  // важное: высота как у колонок учителей — без +1 часа
+  const totalHeight = (HOURS_END - HOURS_START) * 60 * MINUTE_PX
+
+  const inRange =
+    nowMinuteAbs != null &&
+    nowMinuteAbs >= HOURS_START * 60 &&
+    nowMinuteAbs <= HOURS_END * 60
+  const nowTop = inRange ? (nowMinuteAbs! - HOURS_START * 60) * MINUTE_PX : null
 
   return (
-    <div className="sticky right-0 top-[52px] h[calc(100vh-64px)] sm:h-[calc(100vh-64px)] overflow-hidden w-16 border-l bg-white z-10">
+    // только горизонтальный sticky (к правому краю), НЕТ top/overflow
+    <div className="sticky right-0 w-16 border-l bg-white z-10">
       <div className="relative" style={{ height: totalHeight }}>
         {hours.map((h) => (
           <div
@@ -182,6 +165,12 @@ function TimeAxis() {
             {String(h).padStart(2, '0')}:00
           </div>
         ))}
+
+        {inRange && (
+          <div className="absolute left-0 right-0 pointer-events-none" style={{ top: nowTop! }}>
+            <div className="border-t border-red-500" />
+          </div>
+        )}
       </div>
     </div>
   )
@@ -205,7 +194,7 @@ function toTimeInput(v?: string | null): string {
   return v.length >= 5 ? v.slice(0, 5) : v
 }
 
-export function SlotModal(props: {
+const SlotModal = (props: {
   open: boolean
   onOpenChange: (v: boolean) => void
   mode: 'create' | 'edit'
@@ -214,7 +203,7 @@ export function SlotModal(props: {
   subjects: Subject[]
   initial?: Partial<Slot>
   onSaved: () => void
-}) {
+}) => {
   const { open, onOpenChange, mode, teacher, date, subjects, initial, onSaved } = props
   const isEdit = mode === 'edit'
 
@@ -227,6 +216,7 @@ export function SlotModal(props: {
   const [modeValue, setModeValue] = useState<ModeType>('online')
   const [status, setStatus] = useState<SlotStatus>('available')
   const [saving, setSaving] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   
   // --- префилл при открытии/смене initial
   useEffect(() => {
@@ -341,7 +331,7 @@ export function SlotModal(props: {
             <Select
                 key={`subject-${open}-${initial?.id}-${subjectValue ?? 'none'}`}
                 value={subjectValue}
-                onValueChange={(v) => setSubjectId(Number(v))} 
+                onValueChange={(v) => setSubjectId(Number(v))}
             >
               <SelectTrigger className="w-full">
                 <SelectValue placeholder="Выбери предмет" />
@@ -362,7 +352,7 @@ export function SlotModal(props: {
               {/* Тип занятия */}
               <Select 
                 value={lessonType ?? 'individual'} 
-                onValueChange={(v: LessonType) => onChangeLessonType(v)}
+                onValueChange={(v) => onChangeLessonType(v as LessonType)}
               >
                 <SelectTrigger className="w-full"><SelectValue placeholder="Тип" /></SelectTrigger>
                 <SelectContent>
@@ -376,7 +366,7 @@ export function SlotModal(props: {
               <label className="text-xs text-gray-500">Формат</label>
               <Select 
                 value={modeValue ?? 'online'} 
-                onValueChange={(v: ModeType) => setModeValue(v)}
+                onValueChange={(v) => setModeValue(v as ModeType)}
               >
                 <SelectTrigger className="w-full"><SelectValue placeholder="Формат" /></SelectTrigger>
                 <SelectContent>
@@ -390,7 +380,7 @@ export function SlotModal(props: {
               <label className="text-xs text-gray-500">Статус</label>
               <Select 
                 value={status ?? 'available'} 
-                onValueChange={(v: SlotStatus) => setStatus(v)}
+                onValueChange={(v) => setStatus(v as SlotStatus)}
               >
                 <SelectTrigger className="w-full"><SelectValue placeholder="Статус" /></SelectTrigger>
                 <SelectContent>
@@ -421,17 +411,52 @@ export function SlotModal(props: {
           )}
         </div>
 
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>Отмена</Button>
-          <Button onClick={onSubmit} disabled={!canSubmit || saving}>
-            {isEdit ? 'Сохранить' : 'Создать'}
-          </Button>
+        <DialogFooter className="flex items-center justify-between">
+          {isEdit ? (
+            <Button
+              variant="destructive"
+              onClick={onDelete}
+              disabled={saving || deleting}
+              className={!('destructive' in (Button as any)) ? 'text-red-600 border-red-300 hover:bg-red-50' : undefined}
+            >
+              {deleting ? 'Удаление…' : 'Удалить'}
+            </Button>
+          ) : (
+            <span /> 
+          )}
+
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving || deleting}>
+              Отмена
+            </Button>
+            <Button onClick={onSubmit} disabled={!canSubmit || saving || deleting}>
+              {isEdit ? 'Сохранить' : 'Создать'}
+            </Button>
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>
   )
-}
 
+
+  async function onDelete() {
+    if (!initial?.id) return
+    const ok = window.confirm('Удалить этот слот? Действие необратимо.')
+    if (!ok) return
+    try {
+      setDeleting(true)
+      await deleteSlot(initial.id)
+      toast.success('Слот удалён')
+      onOpenChange(false)
+      onSaved() // перезагружает список
+    } catch (e: any) {
+      // Если на бэке 409 при активных бронях — сообщение придёт в e.message
+      toast.error(e?.message || 'Не удалось удалить слот')
+    } finally {
+      setDeleting(false)
+    }
+  }
+}
 // ──────────────────────────────────────────────────────────────────────────────
 // Страница
 // ──────────────────────────────────────────────────────────────────────────────
@@ -450,11 +475,14 @@ function SlotsInner() {
   const [subjects, setSubjects] = useState<Subject[]>([])
   const [slots, setSlots] = useState<Slot[]>([])
   const [loading, setLoading] = useState(false)
+  const initialScrollDone = useRef(false)
 
   const [modalOpen, setModalOpen] = useState(false)
   const [modalMode, setModalMode] = useState<'create' | 'edit'>('create')
   const [activeTeacher, setActiveTeacher] = useState<Teacher | undefined>(undefined)
   const [editingSlot, setEditingSlot] = useState<Slot | undefined>(undefined)
+  const [nowMinuteAbs, setNowMinuteAbs] = useState<number | null>(null)
+  
 
   const dateStr = useMemo(() => fmtDate(date), [date])
   // map предметов: id -> name
@@ -463,6 +491,10 @@ function SlotsInner() {
     for (const s of subjects) m[s.id] = s.name
     return m
   }, [subjects])
+
+  useEffect(() => {
+    initialScrollDone.current = false
+  }, [dateStr])
 
   useEffect(() => {
     ;(async () => {
@@ -483,6 +515,33 @@ function SlotsInner() {
       setLoading(false)
     }
   }
+
+  useEffect(() => {
+    const tick = () => {
+      const now = new Date()
+      const todayStr = fmtDate(now)
+      if (todayStr === dateStr) {
+        setNowMinuteAbs(now.getHours() * 60 + now.getMinutes())
+      } else {
+      setNowMinuteAbs(null)
+      }
+    }
+    tick()
+    const id = setInterval(tick, 60_000)
+    return () => clearInterval(id)
+  }, [dateStr])
+
+  useEffect(() => {
+    if (nowMinuteAbs == null) return
+    if (initialScrollDone.current) return
+    const el = document.getElementById('slots-scroll')
+    if (!el) return
+    const y = Math.max(0, (nowMinuteAbs - HOURS_START * 60) * MINUTE_PX - 200)
+    // если хочешь плавно:
+    // el.scrollTo({ top: y, behavior: 'smooth' })
+    el.scrollTo?.({ top: y, behavior: 'smooth' })
+    initialScrollDone.current = true
+  }, [nowMinuteAbs, dateStr])
 
   useEffect(() => {
     if (teachers.length) loadSlots()
@@ -523,7 +582,7 @@ function SlotsInner() {
       </div>
 
       {/* Grid */}
-      <div className="flex-1 overflow-x-auto overflow-y-hidden">
+      <div id="slots-scroll" className="flex-1 overflow-x-auto overflow-y-auto">
         <div
           className="min-w-[720px] grid"
           style={{ gridTemplateColumns: `repeat(${teachers.length}, minmax(220px, 1fr)) 72px` }}
@@ -548,11 +607,12 @@ function SlotsInner() {
               onEmptyCellClick={(m) => onEmptyCellClick(t, m)}
               onSlotClick={onSlotClick}
               subjectsMap={subjectsMap}
+              nowMinuteAbs={nowMinuteAbs}
             />
           ))}
 
           {/* Правая ось времени */}
-          <TimeAxis />
+          <TimeAxis nowMinuteAbs={nowMinuteAbs} />
         </div>
       </div>
 
@@ -580,6 +640,7 @@ function TeacherColumn({
   onEmptyCellClick,
   onSlotClick,
   subjectsMap,
+  nowMinuteAbs, 
 }: {
   teacher: Teacher
   date: string
@@ -587,9 +648,15 @@ function TeacherColumn({
   onEmptyCellClick: (minuteFrom: number) => void
   onSlotClick: (s: Slot) => void
   subjectsMap: Record<number, string>
+  nowMinuteAbs: number | null
 }) {
   const totalHeight = (HOURS_END - HOURS_START) * 60 * MINUTE_PX
   const bgRows = useMemo(() => Array.from({ length: (HOURS_END - HOURS_START) * 4 }, () => 1), [])
+  const inRange =
+    nowMinuteAbs != null &&
+    nowMinuteAbs >= HOURS_START * 60 &&
+    nowMinuteAbs <= HOURS_END * 60
+  const nowTop = inRange ? (nowMinuteAbs! - HOURS_START * 60) * MINUTE_PX : null
 
   return (
     <div className="relative border-l">
@@ -619,6 +686,15 @@ function TeacherColumn({
         }}
         title="Двойной клик — создать слот"
       >
+        {inRange && (
+          <div
+            className="absolute inset-x-0 pointer-events-none z-20"
+            style={{ top: nowTop! }}
+          >
+            <div className="border-t border-red-500" />
+          </div>
+        )}
+
         {slots.map((s) => (
           <SlotBlock 
             key={s.id} 

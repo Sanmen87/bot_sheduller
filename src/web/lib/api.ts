@@ -129,3 +129,17 @@ export async function createSlotsByInterval(params: {
     skip_conflicts: true,
   })
 }
+
+// УДАЛЕНИЕ СЛОТА
+export async function deleteSlot(id: number) {
+  const res = await fetch(`${BASE}/slots/${id}`, {
+    method: 'DELETE',
+    credentials: 'include',
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    // Бэк обычно отдаёт 409 при наличии брони у слота
+    throw new Error(`Не удалось удалить слот: ${res.status} ${text || res.statusText}`)
+  }
+  // 204 No Content — просто выходим
+}
