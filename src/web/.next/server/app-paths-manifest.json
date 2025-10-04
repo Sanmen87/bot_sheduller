@@ -1,5 +1,6 @@
 {
-  "/slots/page": "app/slots/page.js",
-  "/login/page": "app/login/page.js",
-  "/bookings/page": "app/bookings/page.js"
+  "/users/page": "app/users/page.js",
+  "/teachers/page": "app/teachers/page.js",
+  "/bookings/page": "app/bookings/page.js",
+  "/slots/page": "app/slots/page.js"
 }

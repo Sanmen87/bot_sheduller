@@ -14,6 +14,13 @@ export default function UsersPage() {
   )
 }
 
+const ROLE_LABEL: Record<UserRole, string> = {
+  admin: 'Администратор',
+  teacher: 'Специалист',
+  client: 'Клиент',
+  guest: 'Гость',
+}
+
 function UsersInner() {
   const [items, setItems] = useState<UserRow[]>([])
   const [total, setTotal] = useState(0)
@@ -97,10 +104,10 @@ function UsersInner() {
           }}
         >
           <option value="">Все роли</option>
-          <option value="admin">Админ</option>
-          <option value="teacher">Учитель</option>
-          <option value="client">Клиент</option>
-          <option value="guest">Гость</option>
+          <option value="admin">{ROLE_LABEL.admin}</option>
+          <option value="teacher">{ROLE_LABEL.teacher}</option>
+          <option value="client">{ROLE_LABEL.client}</option>
+          <option value="guest">{ROLE_LABEL.guest}</option>
         </select>
 
         <select
@@ -126,18 +133,18 @@ function UsersInner() {
           <thead>
             <tr className="bg-slate-50 text-left">
               <th className="p-2 w-24">Роль</th>
-              <th className="p-2 w-[18rem]">username</th>
+              <th className="p-2 w-[18rem]">Имя пользователя</th>
               <th className="p-2 w-28">Telegram ID</th>
               <th className={clsx('p-2 w-[20rem]', 'hidden lg:table-cell')}>Email</th>
               <th className={clsx('p-2 w-[16rem]', 'hidden xl:table-cell')}>Телефон</th>
-              <th className="p-2 w-28">is_verified</th>
+              <th className="p-2 w-28">Верификация</th>
               <th className="p-2 w-32"></th>
             </tr>
           </thead>
           <tbody>
             {items.map(u => (
               <tr key={u.id} className="border-t">
-                <td className="p-2 whitespace-nowrap">{u.role}</td>
+                <td className="p-2 whitespace-nowrap">{ROLE_LABEL[u.role] || u.role}</td>
 
                 <td className="p-2">
                   <span className="block max-w-[18rem] truncate" title={u.username || ''}>
@@ -160,16 +167,19 @@ function UsersInner() {
                 </td>
 
                 <td className="p-2">
-                  <input type="checkbox" checked={u.is_verified} onChange={() => toggleVerify(u)} />
+                  <input
+                    type="checkbox"
+                    aria-label="Верификация"
+                    checked={u.is_verified} 
+                    onChange={() => toggleVerify(u)} 
+                  />
                 </td>
 
-                <td className="p-2 text-right space-x-2">
-                  <button className="rounded border px-2 py-1" onClick={() => setEditing(u)}>
-                    Изменить
-                  </button>
-                  <button className="rounded border px-2 py-1" onClick={() => remove(u)}>
-                    Удалить
-                  </button>
+                <td className="p-2">
+                  <div className="flex justify-end gap-2">
+                    <button className="rounded border px-2 py-1" onClick={() => setEditing(u)}>Изменить</button>
+                    <button className="rounded border px-2 py-1" onClick={() => remove(u)}>Удалить</button>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -227,6 +237,8 @@ function EditUserModal({
 }) {
   const [form, setForm] = useState({
     role: user.role,
+    first_name: user.first_name ?? '',
+    last_name:  user.last_name ?? '',
     username: user.username ?? '',
     email: user.email ?? '',
     phone: user.phone ?? '',
@@ -239,6 +251,8 @@ function EditUserModal({
     try {
       const payload: any = {
         role: form.role,
+        first_name: form.first_name || null,
+        last_name: form.last_name || null,
         username: form.username || null,
         email: form.email || null,
         phone: form.phone || null,
@@ -266,6 +280,25 @@ function EditUserModal({
         </div>
 
         <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+          
+          <label className="grid gap-1">
+            <span className="text-sm">Фамилия</span>
+            <input
+              className="rounded border p-2"
+              value={form.first_name}
+              onChange={e => setForm(f => ({ ...f, first_name: e.target.value }))}
+            />
+          </label>
+
+          <label className="grid gap-1">
+            <span className="text-sm">Имя</span>
+            <input
+              className="rounded border p-2"
+              value={form.last_name}
+              onChange={e => setForm(f => ({ ...f, last_name: e.target.value }))}
+            />
+          </label>
+
           <label className="grid gap-1">
             <span className="text-sm">Роль</span>
             <select
@@ -273,15 +306,15 @@ function EditUserModal({
               value={form.role}
               onChange={e => setForm(f => ({ ...f, role: e.target.value as UserRole }))}
             >
-              <option value="admin">admin</option>
-              <option value="teacher">teacher</option>
-              <option value="client">client</option>
-              <option value="guest">guest</option>
+              <option value="admin">{ROLE_LABEL.admin}</option>
+              <option value="teacher">{ROLE_LABEL.teacher}</option>
+              <option value="client">{ROLE_LABEL.client}</option>
+              <option value="guest">{ROLE_LABEL.guest}</option>
             </select>
           </label>
 
           <label className="grid gap-1">
-            <span className="text-sm">username</span>
+            <span className="text-sm">Имя пользователя</span>
             <input
               className="rounded border p-2"
               value={form.username}
@@ -313,7 +346,7 @@ function EditUserModal({
               checked={form.is_verified}
               onChange={e => setForm(f => ({ ...f, is_verified: e.target.checked }))}
             />
-            <span>is_verified</span>
+            <span>Верификация</span>
           </label>
         </div>
 
