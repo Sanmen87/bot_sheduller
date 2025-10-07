@@ -22,11 +22,15 @@ from sqlalchemy import select, insert, exists, delete, func, update, or_
 from pydantic import BaseModel, Field, ConfigDict, constr, conint 
 from jose import jwt, JWTError
 
+from src.db.session import async_session
 from src.db.session import get_session
 from src.db.models import (
     Subject, TeacherSubject, TimeSlot, Booking,
-    SlotStatus, User, BookingStatus, Teacher, UserRole, LessonType, Setting
+    SlotStatus, User, BookingStatus, Teacher, LessonType, UserRole, AuthLocal , Setting
 )
+
+from passlib.hash import bcrypt
+
 
 # =========================
 #        APP & MIDDLEWARE
@@ -48,6 +52,70 @@ if allowed:
         expose_headers=["X-Total-Count"],
     )
 
+# =========================
+#           автосоздание админа
+# =========================
+
+@app.on_event("startup")
+async def auto_seed_admin():
+    if os.getenv("AUTO_SEED_ADMIN", "false").lower() != "true":
+        return
+
+    email = os.getenv("ADMIN_EMAIL")
+    pwd   = os.getenv("ADMIN_PASSWORD")
+    pwd_hash_env = os.getenv("ADMIN_PASSWORD_HASH")
+    must_change = os.getenv("ADMIN_REQUIRE_PASSWORD_CHANGE", "false").lower() == "true"
+
+    if not email or not (pwd or pwd_hash_env):
+        return
+
+    async with async_session() as session:
+        # 1) ищем пользователя
+        user = (await session.execute(
+            select(User).where(User.email == email)
+        )).scalar_one_or_none()
+
+        # 2) создаём, обязательно заполняем NOT NULL поля
+        if not user:
+            user = User(
+                email=email,
+                role="admin",        # у тебя роль — строка
+                telegram_id=0,       # NOT NULL → ставим 0 (системный)
+                is_verified=True,    # убери строку, если такого поля нет
+            )
+            session.add(user)
+            await session.flush()
+        else:
+            # гарантируем что роль = admin
+            await session.execute(
+                update(User).where(User.id == user.id).values(role="admin")
+            )
+
+        # 3) создаём/обновляем локные креды
+        auth = (await session.execute(
+            select(AuthLocal).where((AuthLocal.user_id == user.id) | (AuthLocal.email == email))
+        )).scalar_one_or_none()
+
+        password_hash = pwd_hash_env or bcrypt.hash(pwd)
+        if auth:
+            await session.execute(
+                update(AuthLocal).where(AuthLocal.id == auth.id).values(
+                    email=email,
+                    password_hash=password_hash,
+                    is_active=True,
+                    must_change_password=must_change,
+                )
+            )
+        else:
+            session.add(AuthLocal(
+                user_id=user.id,
+                email=email,
+                password_hash=password_hash,
+                is_active=True,
+                must_change_password=must_change,
+            ))
+
+        await session.commit()
 # =========================
 #           HEALTH
 # =========================
@@ -244,21 +312,37 @@ def _slugify(s: str) -> str:
     return s or "subject"
 
 @app.post("/auth/login", response_model=TokenOut, tags=["auth"])
-def auth_login(
+async def auth_login(
     response: Response,
-    form: OAuth2PasswordRequestForm = Depends()  # принимает username/password (email в username)
+    form: OAuth2PasswordRequestForm = Depends(),  # username = email
+    session: AsyncSession = Depends(get_session),
 ):
-    admin_email = os.getenv("ADMIN_EMAIL", "")
-    admin_password = os.getenv("ADMIN_PASSWORD", "")
+    rec = (await session.execute(
+        select(AuthLocal, User)
+        .join(User, User.id == AuthLocal.user_id)
+        .where(AuthLocal.email == form.username)
+    )).first()
 
-    # MVP: логиним только "системного" админа из .env (без БД)
-    if form.username != admin_email or form.password != admin_password:
+    if not rec:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    payload = {"sub": admin_email, "role": "admin", "uid": 0}
+    auth, user = rec
+
+    if not auth.is_active or (user.role not in (UserRole.admin, UserRole.teacher)):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    if not bcrypt.verify(form.password, auth.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    payload = {"sub": auth.email, "role": user.role.value, "uid": user.id}
     token = _create_access_token(payload)
     _put_cookie(response, token)
-    return TokenOut(access_token=token, role="admin", user_id=0, email=admin_email)
+    return TokenOut(
+        access_token=token,
+        role=user.role.value,
+        user_id=user.id,
+        email=auth.email,
+    )
 
 @app.get("/auth/me", response_model=MeOut, tags=["auth"])
 def auth_me(user: MeOut = Depends(current_user)):

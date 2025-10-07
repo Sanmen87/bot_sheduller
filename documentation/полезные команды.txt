@@ -1,3 +1,14 @@
 docker compose logs -f api - лок контейнеров докер
 docker compose restart web-dev - рестрат контейнера
 docker compose build web-dev - перезборка одного контейнера
+
+
+Миграцйии
+# посмотреть текущую позицию
+docker compose exec api alembic current
+
+# применить все миграции до head
+docker compose exec api alembic upgrade head
+
+# проверить, что новая ревизия применена
+docker compose exec api alembic current

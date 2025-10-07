@@ -15,6 +15,8 @@ from sqlalchemy import (
     Boolean,
     UniqueConstraint,
 )
+from sqlalchemy import DateTime  
+from datetime import datetime
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -203,3 +205,27 @@ class Setting(Base):
     value: Mapped[str | None] = mapped_column(Text)
 
     __table_args__ = (UniqueConstraint("key", name="uq_settings_key"),)
+
+class AuthLocal(Base):
+    __tablename__ = "auth_local"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), unique=True)
+    email: Mapped[str] = mapped_column(String(256), unique=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()")
+    user: Mapped["User"] = relationship()
+
+class EmailTokenPurpose(str, enum.Enum):
+    verify = "verify"
+    reset = "reset"
+
+class EmailToken(Base):
+    __tablename__ = "email_tokens"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    purpose: Mapped[EmailTokenPurpose] = mapped_column(Enum(EmailTokenPurpose), nullable=False)
+    token: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
