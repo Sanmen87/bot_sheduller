@@ -4,12 +4,15 @@ from __future__ import annotations
 import os
 import io, csv
 import re
+import secrets
 import unicodedata
 from datetime import date as dt_date, time as dt_time, timedelta, datetime as dt_datetime, timezone
-from datetime import time as dt_time, date as dt_date, datetime as dt_datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import FastAPI, Depends, HTTPException, Body, Query, Response, Request
+from fastapi import (
+    FastAPI, Depends, HTTPException, Body, Query, Response, Request,
+    BackgroundTasks
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from starlette.middleware.sessions import SessionMiddleware
@@ -19,17 +22,23 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, insert, exists, delete, func, update, or_
 
-from pydantic import BaseModel, Field, ConfigDict, constr, conint 
+from pydantic import BaseModel, Field, ConfigDict, constr, conint
 from jose import jwt, JWTError
 
-from src.db.session import async_session
-from src.db.session import get_session
+from src.db.session import async_session, get_session
 from src.db.models import (
     Subject, TeacherSubject, TimeSlot, Booking,
-    SlotStatus, User, BookingStatus, Teacher, LessonType, UserRole, AuthLocal , Setting
+    SlotStatus, User, BookingStatus, Teacher, LessonType, UserRole, AuthLocal, Setting,
+    EmailToken, EmailTokenPurpose
 )
 
 from passlib.hash import bcrypt
+
+# === Новые импорты для почты ===
+from src.services.mail_config import load_mail_config
+from src.services.mailer import send_mail
+from src.services.render_email import render_html
+from src.api.auth import current_user, MeOut
 
 
 # =========================
@@ -312,36 +321,30 @@ def _slugify(s: str) -> str:
     return s or "subject"
 
 @app.post("/auth/login", response_model=TokenOut, tags=["auth"])
-async def auth_login(
+async def login(
     response: Response,
-    form: OAuth2PasswordRequestForm = Depends(),  # username = email
+    form: OAuth2PasswordRequestForm = Depends(),
     session: AsyncSession = Depends(get_session),
 ):
-    rec = (await session.execute(
-        select(AuthLocal, User)
-        .join(User, User.id == AuthLocal.user_id)
-        .where(AuthLocal.email == form.username)
-    )).first()
-
-    if not rec:
+    # Ищем пользователя по email
+    user = (await session.execute(select(User).where(User.email == form.username))).scalar_one_or_none()
+    if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    auth, user = rec
-
-    if not auth.is_active or (user.role not in (UserRole.admin, UserRole.teacher)):
-        raise HTTPException(status_code=403, detail="Forbidden")
-
-    if not bcrypt.verify(form.password, auth.password_hash):
+    # Ищем локальные креды
+    auth = (await session.execute(select(AuthLocal).where(AuthLocal.email == form.username))).scalar_one_or_none()
+    if not auth or not auth.is_active or not bcrypt.verify(form.password, auth.password_hash):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    payload = {"sub": auth.email, "role": user.role.value, "uid": user.id}
+    # Генерируем токен
+    payload = {"sub": user.email, "role": user.role.value, "uid": user.id}
     token = _create_access_token(payload)
     _put_cookie(response, token)
     return TokenOut(
         access_token=token,
         role=user.role.value,
         user_id=user.id,
-        email=auth.email,
+        email=user.email,
     )
 
 @app.get("/auth/me", response_model=MeOut, tags=["auth"])
@@ -1503,6 +1506,200 @@ async def delete_subject(
         raise HTTPException(status_code=404, detail="Subject not found")
     await session.commit()
     return
+
+
+# =============== MAIL SETTINGS (admin only) ===============
+
+from typing import Dict
+from fastapi import Body, Depends
+from pydantic import BaseModel
+
+class MailSettingsIn(BaseModel):
+    enabled: bool
+    from_addr: str
+    host: str
+    port: int
+    user: str
+    password: str
+    starttls: bool
+
+async def require_admin(user: MeOut = Depends(current_user)):
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Требуются права администратора")
+    return user
+
+@app.get("/admin/settings/mail", dependencies=[Depends(require_admin)], tags=["admin"])
+async def get_mail_settings(session: AsyncSession = Depends(get_session)):
+    cfg = await load_mail_config(session)
+    return {
+        "enabled": cfg.enabled,
+        "from_addr": cfg.from_addr,
+        "host": cfg.host,
+        "port": cfg.port,
+        "user": cfg.user,
+        # НЕ возвращаем password в целях безопасности
+        "starttls": cfg.starttls,
+    }
+
+@app.put("/admin/settings/mail", dependencies=[Depends(require_admin)], tags=["admin"])
+async def put_mail_settings(
+    data: MailSettingsIn,
+    session: AsyncSession = Depends(get_session)
+):
+    kv: Dict[str, str] = {
+        "MAIL_ENABLED": "true" if data.enabled else "false",
+        "MAIL_FROM": data.from_addr,
+        "MAIL_SMTP_HOST": data.host,
+        "MAIL_SMTP_PORT": str(data.port),
+        "MAIL_SMTP_USER": data.user,
+        "MAIL_SMTP_PASSWORD": data.password,
+        "MAIL_SMTP_STARTTLS": "true" if data.starttls else "false",
+    }
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    for k, v in kv.items():
+        stmt = pg_insert(Setting).values(key=k, value=v)
+        stmt = stmt.on_conflict_do_update(index_elements=[Setting.key], set_=dict(value=v))
+        await session.execute(stmt)
+    await session.commit()
+    return {"ok": True}
+
+@app.post("/admin/settings/mail/test", dependencies=[Depends(require_admin)], tags=["admin"])
+async def test_mail(
+    to: str = Body(..., embed=True),
+    session: AsyncSession = Depends(get_session)
+):
+    cfg = await load_mail_config(session)
+    if not cfg.enabled:
+        raise HTTPException(status_code=400, detail="Почта отключена")
+    html = "<p><b>✅ Тестовое письмо</b></p><p>Настройки SMTP работают корректно.</p>"
+    await send_mail(cfg, to, "Тест рассылки", html, text="Тест рассылки OK")
+    return {"ok": True}
+
+# =============== EMAIL & AUTH ===============
+
+
+
+TOKEN_TTL_MIN = 30
+
+def _make_token() -> str:
+    return secrets.token_urlsafe(32)
+
+def _token_expiry() -> datetime:
+    return datetime.utcnow() + timedelta(minutes=TOKEN_TTL_MIN)
+
+# 1. Запросить подтверждение email
+@app.post("/auth/request-verify", tags=["auth"])
+async def request_verify_email(
+    background: BackgroundTasks,
+    email: str = Body(..., embed=True),
+    session: AsyncSession = Depends(get_session),
+):
+    user = (await session.execute(select(User).where(User.email == email))).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.is_verified:
+        return {"ok": True}  # уже подтверждён
+
+    token = _make_token()
+    await session.execute(
+        insert(EmailToken).values(
+            user_id=user.id,
+            purpose=EmailTokenPurpose.verify,
+            token=token,
+            expires_at=_token_expiry(),
+        )
+    )
+    await session.commit()
+
+    cfg = await load_mail_config(session)
+    base_url = os.getenv("PUBLIC_WEB_BASE_URL", "http://localhost:5173")
+    verify_url = f"{base_url}/verify?token={token}"
+    html = render_html("verify_email.html", verify_url=verify_url, expires_dt=_token_expiry().isoformat())
+    background.add_task(send_mail, cfg, user.email, "Подтверждение email", html)
+    return {"ok": True}
+
+# 2. Подтвердить email по токену
+@app.get("/auth/verify", tags=["auth"])
+async def verify_email(token: str, session: AsyncSession = Depends(get_session)):
+    row = (await session.execute(
+        select(EmailToken, User)
+        .join(User, User.id == EmailToken.user_id)
+        .where(EmailToken.token == token, EmailToken.purpose == EmailTokenPurpose.verify)
+    )).first()
+    if not row:
+        raise HTTPException(status_code=400, detail="Invalid token")
+    et, user = row
+    if et.used_at or et.expires_at < datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Token expired or used")
+    await session.execute(update(User).where(User.id == user.id).values(is_verified=True))
+    await session.execute(update(EmailToken).where(EmailToken.id == et.id).values(used_at=datetime.utcnow()))
+    await session.commit()
+    return {"ok": True}
+
+# 3. Запросить сброс пароля
+@app.post("/auth/request-reset", tags=["auth"])
+async def request_reset_password(
+    background: BackgroundTasks,
+    email: str = Body(..., embed=True),
+    session: AsyncSession = Depends(get_session),
+):
+    user = (await session.execute(select(User).where(User.email == email))).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    token = _make_token()
+    await session.execute(
+        insert(EmailToken).values(
+            user_id=user.id,
+            purpose=EmailTokenPurpose.reset,
+            token=token,
+            expires_at=_token_expiry(),
+        )
+    )
+    await session.commit()
+
+    cfg = await load_mail_config(session)
+    base_url = os.getenv("PUBLIC_WEB_BASE_URL", "http://localhost:5173")
+    reset_url = f"{base_url}/reset?token={token}"
+    html = render_html("reset_password.html", reset_url=reset_url)
+    background.add_task(send_mail, cfg, user.email, "Сброс пароля", html)
+    return {"ok": True}
+
+# 4. Установить новый пароль
+class ResetIn(BaseModel):
+    token: str
+    new_password: constr(min_length=8)
+
+@app.post("/auth/reset", tags=["auth"])
+async def reset_password(payload: ResetIn, session: AsyncSession = Depends(get_session)):
+    row = (await session.execute(
+        select(EmailToken, User)
+        .join(User, User.id == EmailToken.user_id)
+        .where(EmailToken.token == payload.token, EmailToken.purpose == EmailTokenPurpose.reset)
+    )).first()
+    if not row:
+        raise HTTPException(status_code=400, detail="Invalid token")
+    et, user = row
+    if et.used_at or et.expires_at < datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Token expired or used")
+
+    pwd_hash = bcrypt.hash(payload.new_password)
+    auth = (await session.execute(select(AuthLocal).where(AuthLocal.user_id == user.id))).scalar_one_or_none()
+    if auth:
+        await session.execute(update(AuthLocal).where(AuthLocal.id == auth.id).values(password_hash=pwd_hash))
+    else:
+        await session.execute(
+            insert(AuthLocal).values(
+                user_id=user.id,
+                email=user.email,
+                password_hash=pwd_hash,
+                is_active=True,
+            )
+        )
+    await session.execute(update(EmailToken).where(EmailToken.id == et.id).values(used_at=datetime.utcnow()))
+    await session.commit()
+    return {"ok": True}
+
 
 # =========================
 #           ADMIN UI

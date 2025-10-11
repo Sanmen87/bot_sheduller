@@ -1,7 +1,4 @@
 {
-  "/login/page": "app/login/page.js",
-  "/bookings/page": "app/bookings/page.js",
-  "/users/page": "app/users/page.js",
-  "/teachers/page": "app/teachers/page.js",
-  "/slots/page": "app/slots/page.js"
+  "/settings/mail/page": "app/settings/mail/page.js",
+  "/settings/page": "app/settings/page.js"
 }
