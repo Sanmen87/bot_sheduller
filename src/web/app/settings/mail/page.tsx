@@ -14,6 +14,13 @@ type MailSettings = {
   starttls: boolean
 }
 
+type MailTestResult = {
+  ok: boolean
+  kind: 'success' | 'auth' | 'connect' | 'smtp' | 'unknown' | 'bad_request'
+  message: string
+  details?: string
+}
+
 export default function MailSettingsPage() {
   const role = useAuth((s) => s?.me?.role)
   const isAdmin = role === 'admin'
@@ -22,8 +29,10 @@ export default function MailSettingsPage() {
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+
   const [testEmail, setTestEmail] = useState('')
   const [testing, setTesting] = useState(false)
+  const [lastTest, setLastTest] = useState<MailTestResult | null>(null)
 
   useEffect(() => {
     if (!isAdmin) return
@@ -39,12 +48,9 @@ export default function MailSettingsPage() {
     if (!data) return
     setSaving(true)
     try {
-      await api.put('/admin/settings/mail', {
-        ...data,
-        password,
-      })
+      await api.put('/admin/settings/mail', { ...data, password })
       toast.success('Настройки сохранены')
-      setPassword('') // очищаем после отправки
+      setPassword('')
     } catch (err: any) {
       toast.error(err.message || 'Ошибка сохранения')
     } finally {
@@ -59,10 +65,30 @@ export default function MailSettingsPage() {
     }
     setTesting(true)
     try {
-      await api.post('/admin/settings/mail/test', { to: testEmail })
-      toast.success('Тестовое письмо отправлено')
+      const res = await api.post<MailTestResult>('/admin/settings/mail/test', { to: testEmail })
+      setLastTest(res)
+      if (res.ok) {
+        toast.success(res.message || 'Тестовое письмо отправлено')
+      } else {
+        const hint =
+          res.kind === 'auth'
+            ? ' Проверьте логин и пароль SMTP.'
+            : res.kind === 'connect'
+            ? ' Нет соединения с SMTP-сервером (порт/фаервол/DNS).'
+            : res.kind === 'smtp'
+            ? ' Сервер отклонил запрос — проверьте адреса и политику сервера.'
+            : ''
+        toast.error((res.message || 'Ошибка тестовой отправки.') + hint)
+      }
     } catch (err: any) {
-      toast.error(err.message || 'Ошибка отправки')
+      const fail: MailTestResult = {
+        ok: false,
+        kind: 'unknown',
+        message: 'Ошибка вызова API тестовой отправки',
+        details: String(err?.message || err),
+      }
+      setLastTest(fail)
+      toast.error(fail.message)
     } finally {
       setTesting(false)
     }
@@ -131,7 +157,7 @@ export default function MailSettingsPage() {
         </div>
 
         <div>
-          <label className="block text-sm mb-1">Логин (обычно email)</label>
+          <label className="block text_sm mb-1">Логин (обычно email)</label>
           <input
             type="text"
             className="w-full rounded border p-2"
@@ -192,6 +218,25 @@ export default function MailSettingsPage() {
             {testing ? 'Отправка...' : 'Отправить тест'}
           </button>
         </div>
+
+        {/* Результат последнего теста */}
+        {lastTest && (
+          <div
+            className={`mt-3 rounded border p-3 text-sm ${
+              lastTest.ok ? 'border-green-300 bg-green-50' : 'border-red-300 bg-red-50'
+            }`}
+          >
+            <div className="font-medium">
+              {lastTest.ok ? 'Успешно: письмо отправлено' : 'Ошибка тестовой отправки'}
+            </div>
+            <div className="mt-1">{lastTest.message}</div>
+            {lastTest.details && (
+              <pre className="mt-2 overflow-auto rounded bg-white/60 p-2 text-xs text-slate-700">
+                {lastTest.details}
+              </pre>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )
