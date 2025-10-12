@@ -34,6 +34,13 @@ from src.db.models import (
 
 from passlib.hash import bcrypt
 
+from src.api.auth_sync import sync_auth_local
+
+import logging
+
+from src.db.models import User, AuthLocal, EmailToken, EmailTokenPurpose 
+from src.db.session import AsyncSession
+
 # === Новые импорты для почты ===
 from src.services.mail_config import load_mail_config
 from src.services.mailer import send_mail
@@ -1111,15 +1118,20 @@ async def patch_user(
     await session.execute(update(User).where(User.id == user_id).values(**data))
     await session.commit()
     # вернуть актуальную запись
+    # вызвать синхронизацию (учитывает role/is_verified/email)
+    from .auth_sync import sync_auth_local
+    await sync_auth_local(session, user_id)
+    # перечитать и вернуть
     user = (await session.execute(select(User).where(User.id == user_id))).scalars().first()
     return user
+
 
 @app.post("/teachers", response_model=TeacherCardOut, status_code=201, tags=["teachers"])
 async def create_teacher(
     payload: TeacherCreateIn,
     session: AsyncSession = Depends(get_session),
 ):
-    # проверим, что есть такой user и что у него подходящая роль
+    # проверим, что есть такой user
     user = (await session.execute(select(User).where(User.id == payload.user_id))).scalars().first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -1139,16 +1151,21 @@ async def create_teacher(
             bio=payload.bio,
         )
     )
-    # добавим предметы
+
+    # добавим предметы, если есть
     if payload.subject_ids:
         values = [{"teacher_id": payload.user_id, "subject_id": sid} for sid in payload.subject_ids]
         await session.execute(insert(TeacherSubject), values)
 
     # если роль у пользователя не teacher — поднимем
     if user.role != UserRole.teacher:
-        await session.execute(update(User).where(User.id == payload.user_id).values(role=UserRole.teacher))
+        await session.execute(
+            update(User).where(User.id == payload.user_id).values(role=UserRole.teacher)
+        )
+        await session.commit()  # коммитим изменение роли перед синхронизацией
 
-    await session.commit()
+    # 🔁 синхронизируем с auth_local (создаст логин + письмо «Задать пароль»)
+    await sync_auth_local(session, user_id=payload.user_id)
 
     # ответ
     subj_ids = payload.subject_ids or []
@@ -1161,6 +1178,7 @@ async def create_teacher(
         subject_ids=subj_ids,
         user_name=_format_user_name(uo),
     )
+
 
 @app.get("/teachers", response_model=list[TeacherCardOut], tags=["teachers"])
 async def list_teachers(
@@ -1567,6 +1585,7 @@ async def put_mail_settings(
 
 
 # =============== EMAIL & AUTH ===============
+logger = logging.getLogger(__name__) 
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -1607,9 +1626,10 @@ async def forgot_password(payload: ForgotPasswordIn, session: AsyncSession = Dep
     try:
         cfg = await load_mail_config(session)
         await send_mail(cfg, payload.email, "Сброс пароля", html, text=f"Ссылка: {reset_link}")
-    except Exception:
-        # Не раскрываем наружу детали доставки
-        pass
+    except Exception as e:
+        # раньше было: pass — это и скрывало реальную ошибку
+        logger.exception("Failed to send reset password email to %s", payload.email)
+        # (по желанию) сохранить событие в таблицу notifications с статусом error
 
     return {"ok": True, "message": "Если такой email существует, мы отправили письмо со ссылкой на сброс."}
 

@@ -12,3 +12,6 @@ docker compose exec api alembic upgrade head
 
 # проверить, что новая ревизия применена
 docker compose exec api alembic current
+
+
+docker exec -it crm-schedule-bot-db-1 psql -U schedule -d schedule -c "SELECT id, email FROM users WHERE email='smm@nipt.ru';"
